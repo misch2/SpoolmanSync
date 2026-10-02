@@ -1,9 +1,9 @@
-name: SpoolmanSync
-version: "1.6.13"
-slug: spoolmansync-ha-addon
+name: SpoolmanSync DEV
+version: "1.6.13-extspoolname.1"
+slug: spoolmansync-ha-addon-dev
 description: Automatic filament tracking for Bambu Lab and Creality printers with Spoolman
-url: https://github.com/gibz104/SpoolmanSync
-image: ghcr.io/gibz104/spoolmansync-addon
+url: https://github.com/misch2/SpoolmanSync
+image: ghcr.io/misch2/spoolmansync-addon
 arch:
   - aarch64
   - amd64
