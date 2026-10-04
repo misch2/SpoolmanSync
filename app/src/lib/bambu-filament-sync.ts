@@ -65,86 +65,86 @@ type FilamentWithSyncMetadata =
  */
 const GENERIC_PROFILES:
   Record<string, BambuProfile> = {
-    PLA: {
-      id: 'GFL99',
-      trayType: 'PLA',
-      minTemp: 190,
-      maxTemp: 240,
-      settingIdByModel: {
-        X2D: 'GFSL99_17',
-      },
+  PLA: {
+    id: 'GFL99',
+    trayType: 'PLA',
+    minTemp: 190,
+    maxTemp: 240,
+    settingIdByModel: {
+      X2D: 'GFSL99_17',
     },
+  },
 
-    PLAPLUS: {
-      id: 'GFL99',
-      trayType: 'PLA',
-      minTemp: 190,
-      maxTemp: 240,
-      settingIdByModel: {
-        X2D: 'GFSL99_17',
-      },
+  PLAPLUS: {
+    id: 'GFL99',
+    trayType: 'PLA',
+    minTemp: 190,
+    maxTemp: 240,
+    settingIdByModel: {
+      X2D: 'GFSL99_17',
     },
+  },
 
-    PETG: {
-      id: 'GFG99',
-      trayType: 'PETG',
-      minTemp: 220,
-      maxTemp: 260,
-      settingIdByModel: {
-        X2D: 'GFSG99_15',
-      },
+  PETG: {
+    id: 'GFG99',
+    trayType: 'PETG',
+    minTemp: 220,
+    maxTemp: 260,
+    settingIdByModel: {
+      X2D: 'GFSG99_15',
     },
+  },
 
-    PETGHF: {
-      id: 'GFG96',
-      trayType: 'PETG',
-      minTemp: 230,
-      maxTemp: 270,
-      settingIdByModel: {
-        X2D: 'GFSG96_14',
-      },
+  PETGHF: {
+    id: 'GFG96',
+    trayType: 'PETG',
+    minTemp: 230,
+    maxTemp: 270,
+    settingIdByModel: {
+      X2D: 'GFSG96_14',
     },
+  },
 
-    PCTG: {
-      id: 'GFG97',
-      trayType: 'PCTG',
-      minTemp: 240,
-      maxTemp: 270,
-      settingIdByModel: {
-        X2D: 'GFSG97_06',
-      },
+  PCTG: {
+    id: 'GFG97',
+    trayType: 'PCTG',
+    minTemp: 240,
+    maxTemp: 270,
+    settingIdByModel: {
+      X2D: 'GFSG97_06',
     },
+  },
 
-    ASA: {
-      id: 'GFB98',
-      trayType: 'ASA',
-      minTemp: 240,
-      maxTemp: 280,
-      settingIdByModel: {
-        X2D: 'GFSB98_14',
-      },
+  ASA: {
+    id: 'GFB98',
+    trayType: 'ASA',
+    minTemp: 240,
+    maxTemp: 280,
+    settingIdByModel: {
+      X2D: 'GFSB98_14',
     },
+  },
 
-    TPU: {
-      id: 'GFU99',
-      trayType: 'TPU',
-      minTemp: 190,
-      maxTemp: 240,
-      settingIdByModel: {
-        X2D: 'GFSU99_03',
-      },
+  TPU: {
+    id: 'GFU99',
+    trayType: 'TPU',
+    minTemp: 190,
+    maxTemp: 240,
+    settingIdByModel: {
+      X2D: 'GFSU99_03',
     },
+  },
 
-    TPU95A: {
-      id: 'GFU99',
-      trayType: 'TPU',
-      minTemp: 190,
-      maxTemp: 240,
-      settingIdByModel: {
-        X2D: 'GFSU99_03',
-      },
+  TPU95A: {
+    id: 'GFU99',
+    trayType: 'TPU',
+    minTemp: 190,
+    maxTemp: 240,
+    settingIdByModel: {
+      X2D: 'GFSU99_03',
     },
-  };
+  },
+};
 
 function normalizeMaterialKey(
   value: string | null | undefined,
@@ -298,7 +298,7 @@ function resolveProfile(
   const settingId =
     customSettingId ||
     generic?.settingIdByModel[
-      printerModel.toUpperCase()
+    printerModel.toUpperCase()
     ];
 
   if (!settingId) {
@@ -376,11 +376,14 @@ function trayMatches(
 }
 
 /*
- * HAPrinter.prefix comes from the Bambu unique_id:
+ * HAPrinter.prefix normally comes from the Bambu unique_id:
  *
  *   X2D_20P5BJ660701399_print_status
  *        ↓
  *   x2d_20p5bj660701399
+ *
+ * Keep this as a fallback only. For a specific tray, its own
+ * unique_id is a better source of printer identity.
  */
 function parsePrinterIdentity(
   prefix: string,
@@ -408,6 +411,48 @@ function parsePrinterIdentity(
       prefix
         .slice(separator + 1)
         .toUpperCase(),
+  };
+}
+
+/*
+ * Bambu tray unique_ids start with:
+ *
+ *   X2D_20P5BJ660701399_AMS_...
+ *   X2D_20P5BJ660701399_ExternalSpool_...
+ *
+ * The first two components therefore give us the printer model
+ * and serial without depending on the printer entity prefix.
+ */
+function parsePrinterIdentityFromTray(
+  tray: HATray,
+): {
+  model: string;
+  printerId: string;
+} | null {
+  const uniqueId =
+    tray.unique_id;
+
+  if (!uniqueId) {
+    return null;
+  }
+
+  const parts =
+    uniqueId.split('_');
+
+  if (
+    parts.length < 2 ||
+    !parts[0] ||
+    !parts[1]
+  ) {
+    return null;
+  }
+
+  return {
+    model:
+      parts[0].toUpperCase(),
+
+    printerId:
+      parts[1].toUpperCase(),
   };
 }
 
@@ -448,13 +493,13 @@ export async function syncSpoolToBambuTray(
 
   let target:
     | {
-        tray: HATray;
-        printerName: string;
-        printerModel: string;
-        printerId: string;
-        amsNumber?: number;
-        external: boolean;
-      }
+      tray: HATray;
+      printerName: string;
+      printerModel: string;
+      printerId: string;
+      amsNumber?: number;
+      external: boolean;
+    }
     | undefined;
 
   for (const printer of printers) {
@@ -465,14 +510,15 @@ export async function syncSpoolToBambuTray(
       continue;
     }
 
-    const identity =
+    /*
+     * Do not reject the whole printer just because its prefix
+     * cannot be parsed. We can derive identity from the tray's
+     * stable unique_id after finding the requested tray.
+     */
+    const prefixIdentity =
       parsePrinterIdentity(
         printer.prefix,
       );
-
-    if (!identity) {
-      continue;
-    }
 
     for (
       const ams of
@@ -488,6 +534,21 @@ export async function syncSpoolToBambuTray(
         );
 
       if (tray) {
+        const identity =
+          parsePrinterIdentityFromTray(
+            tray,
+          ) ||
+          prefixIdentity;
+
+        if (!identity) {
+          console.warn(
+            `[bambu-filament-sync] Found tray ${trayKey}, ` +
+            `but could not determine printer identity`,
+          );
+
+          continue;
+        }
+
         target = {
           tray,
           printerName:
@@ -516,6 +577,21 @@ export async function syncSpoolToBambuTray(
         );
 
       if (tray) {
+        const identity =
+          parsePrinterIdentityFromTray(
+            tray,
+          ) ||
+          prefixIdentity;
+
+        if (!identity) {
+          console.warn(
+            `[bambu-filament-sync] Found external tray ${trayKey}, ` +
+            `but could not determine printer identity`,
+          );
+
+          continue;
+        }
+
         target = {
           tray,
           printerName:
@@ -535,6 +611,56 @@ export async function syncSpoolToBambuTray(
   }
 
   if (!target) {
+    /*
+     * Keep enough discovery detail in the add-on log to diagnose
+     * unique_id/entity_id mismatches without enabling broad debug logging.
+     */
+    const discoveredTrays: string[] = [];
+
+    for (const printer of printers) {
+      if (
+        printer.brand !==
+        'bambu_lab'
+      ) {
+        continue;
+      }
+
+      for (
+        const ams of
+        printer.ams_units
+      ) {
+        for (const tray of ams.trays) {
+          discoveredTrays.push(
+            `${printer.name}:` +
+            `AMS${ams.ams_number}/tray${tray.tray_number}` +
+            ` entity=${tray.entity_id}` +
+            ` unique=${tray.unique_id || '<none>'}`,
+          );
+        }
+      }
+
+      for (
+        const tray of
+        printer.external_spools
+      ) {
+        discoveredTrays.push(
+          `${printer.name}:external` +
+          ` entity=${tray.entity_id}` +
+          ` unique=${tray.unique_id || '<none>'}`,
+        );
+      }
+    }
+
+    console.warn(
+      `[bambu-filament-sync] Tray "${trayKey}" not found. ` +
+      `Discovered Bambu trays: ` +
+      (
+        discoveredTrays.length > 0
+          ? discoveredTrays.join(' | ')
+          : '<none>'
+      ),
+    );
+
     return {
       status: 'skipped',
       reason:
@@ -576,7 +702,7 @@ export async function syncSpoolToBambuTray(
 
   const filament =
     spool.filament as
-      FilamentWithSyncMetadata;
+    FilamentWithSyncMetadata;
 
   const profileResolution =
     resolveProfile(
