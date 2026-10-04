@@ -2,6 +2,11 @@ import {
   HomeAssistantClient,
   type HATray,
 } from '@/lib/api/homeassistant';
+
+import {
+  BambuBridgeClient,
+} from '@/lib/api/bambu-bridge';
+
 import {
   parseExtraValue,
   type Spool,
@@ -12,81 +17,138 @@ interface BambuProfile {
   trayType: string;
   minTemp: number;
   maxTemp: number;
+
+  // Bambu setting_id is printer/nozzle-profile specific.
+  settingIdByModel: Record<string, string>;
+}
+
+interface ResolvedBambuProfile {
+  profileId: string;
+  settingId: string;
+  trayType: string;
+  minTemp: number;
+  maxTemp: number;
 }
 
 export interface BambuFilamentSyncResult {
-  status: 'synced' | 'skipped';
+  status: 'synced' | 'skipped' | 'failed';
   reason?: string;
+
   printer?: string;
   entityId?: string;
+
   profileId?: string;
+  settingId?: string;
   trayType?: string;
   color?: string;
+
+  amsId?: number;
+  trayId?: number;
+
+  verified?: boolean;
+  elapsedMs?: number;
+  sequenceId?: string;
 }
 
-type FilamentWithSyncMetadata = Spool['filament'] & {
-  settings_extruder_temp?: number | null;
-  extra?: Record<string, string>;
-};
+type FilamentWithSyncMetadata =
+  Spool['filament'] & {
+    settings_extruder_temp?: number | null;
+    extra?: Record<string, string>;
+  };
 
 /*
- * Bambu's stable generic filament IDs.
+ * Generic Bambu filament IDs plus the matching X2D 0.4 mm
+ * system preset setting_ids.
  *
- * These are used unless the Spoolman filament has a bambu_filament_id
- * custom field containing a more specific/custom Bambu profile ID.
+ * The filament ID itself is stable across printers. setting_id is not,
+ * which is why the mapping is explicitly model-specific.
  */
-const GENERIC_PROFILES: Record<string, BambuProfile> = {
-  PLA: {
-    id: 'GFL99',
-    trayType: 'PLA',
-    minTemp: 190,
-    maxTemp: 240,
-  },
-  PLAPLUS: {
-    id: 'GFL99',
-    trayType: 'PLA',
-    minTemp: 190,
-    maxTemp: 240,
-  },
-  PETG: {
-    id: 'GFG99',
-    trayType: 'PETG',
-    minTemp: 220,
-    maxTemp: 260,
-  },
-  PETGHF: {
-    id: 'GFG96',
-    trayType: 'PETG',
-    minTemp: 230,
-    maxTemp: 270,
-  },
-  PCTG: {
-    id: 'GFG97',
-    trayType: 'PCTG',
-    minTemp: 240,
-    maxTemp: 270,
-  },
-  ASA: {
-    id: 'GFB98',
-    trayType: 'ASA',
-    minTemp: 240,
-    maxTemp: 280,
-  },
-  TPU: {
-    id: 'GFU99',
-    trayType: 'TPU',
-    minTemp: 190,
-    maxTemp: 240,
-  },
-  TPU95A: {
-    id: 'GFU99',
-    trayType: 'TPU',
-    minTemp: 190,
-    maxTemp: 240,
-  },
-};
+const GENERIC_PROFILES:
+  Record<string, BambuProfile> = {
+    PLA: {
+      id: 'GFL99',
+      trayType: 'PLA',
+      minTemp: 190,
+      maxTemp: 240,
+      settingIdByModel: {
+        X2D: 'GFSL99_17',
+      },
+    },
 
-function normalizeMaterialKey(value: string | null | undefined): string {
+    PLAPLUS: {
+      id: 'GFL99',
+      trayType: 'PLA',
+      minTemp: 190,
+      maxTemp: 240,
+      settingIdByModel: {
+        X2D: 'GFSL99_17',
+      },
+    },
+
+    PETG: {
+      id: 'GFG99',
+      trayType: 'PETG',
+      minTemp: 220,
+      maxTemp: 260,
+      settingIdByModel: {
+        X2D: 'GFSG99_15',
+      },
+    },
+
+    PETGHF: {
+      id: 'GFG96',
+      trayType: 'PETG',
+      minTemp: 230,
+      maxTemp: 270,
+      settingIdByModel: {
+        X2D: 'GFSG96_14',
+      },
+    },
+
+    PCTG: {
+      id: 'GFG97',
+      trayType: 'PCTG',
+      minTemp: 240,
+      maxTemp: 270,
+      settingIdByModel: {
+        X2D: 'GFSG97_06',
+      },
+    },
+
+    ASA: {
+      id: 'GFB98',
+      trayType: 'ASA',
+      minTemp: 240,
+      maxTemp: 280,
+      settingIdByModel: {
+        X2D: 'GFSB98_14',
+      },
+    },
+
+    TPU: {
+      id: 'GFU99',
+      trayType: 'TPU',
+      minTemp: 190,
+      maxTemp: 240,
+      settingIdByModel: {
+        X2D: 'GFSU99_03',
+      },
+    },
+
+    TPU95A: {
+      id: 'GFU99',
+      trayType: 'TPU',
+      minTemp: 190,
+      maxTemp: 240,
+      settingIdByModel: {
+        X2D: 'GFSU99_03',
+      },
+    },
+  };
+
+function normalizeMaterialKey(
+  value: string | null | undefined,
+): string {
   return (value || '')
     .toUpperCase()
     .replace(/\+/g, 'PLUS')
@@ -98,9 +160,14 @@ function getExtraString(
   key: string,
 ): string | undefined {
   const raw = filament.extra?.[key];
-  if (!raw) return undefined;
 
-  const value = parseExtraValue(raw).trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  const value =
+    parseExtraValue(raw).trim();
+
   return value || undefined;
 }
 
@@ -108,29 +175,37 @@ function getExtraNumber(
   filament: FilamentWithSyncMetadata,
   key: string,
 ): number | undefined {
-  const value = getExtraString(filament, key);
-  if (value === undefined) return undefined;
+  const value =
+    getExtraString(filament, key);
+
+  if (value === undefined) {
+    return undefined;
+  }
 
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : undefined;
 }
 
-/**
- * Convert Spoolman's RRGGBB / RRGGBBAA color to the RRGGBBAA
- * format expected by bambu_lab.set_filament.
- */
 function normalizeTrayColor(
   filament: FilamentWithSyncMetadata,
 ): string | null {
   let raw = filament.color_hex;
 
-  // Bambu only accepts one tray color. For a multi-color filament use
-  // the first color when no normal color_hex is available.
-  if (!raw && filament.multi_color_hexes) {
-    raw = filament.multi_color_hexes.split(',')[0];
+  if (
+    !raw &&
+    filament.multi_color_hexes
+  ) {
+    raw =
+      filament.multi_color_hexes
+        .split(',')[0];
   }
 
-  if (!raw) return null;
+  if (!raw) {
+    return null;
+  }
 
   const hex = raw
     .trim()
@@ -142,6 +217,7 @@ function normalizeTrayColor(
   }
 
   if (/^[0-9A-F]{8}$/.test(hex)) {
+    // Preserve Spoolman's alpha byte.
     return hex;
   }
 
@@ -150,61 +226,94 @@ function normalizeTrayColor(
 
 function resolveProfile(
   filament: FilamentWithSyncMetadata,
+  printerModel: string,
 ): {
-  profileId: string;
-  trayType: string;
-  minTemp: number;
-  maxTemp: number;
-} | null {
-  const key = normalizeMaterialKey(filament.material);
-  const generic = GENERIC_PROFILES[key];
+  profile?: ResolvedBambuProfile;
+  reason?: string;
+} {
+  const key =
+    normalizeMaterialKey(
+      filament.material,
+    );
 
-  /*
-   * Optional overrides stored on the FILAMENT definition in Spoolman.
-   *
-   * This is intentionally filament-level rather than spool-level: every
-   * spool of e.g. "Elegoo Rapid PETG Space Grey" should use the same
-   * Bambu profile.
-   */
-  const customProfileId = getExtraString(
-    filament,
-    'bambu_filament_id',
-  );
+  const generic =
+    GENERIC_PROFILES[key];
 
-  const customTrayType = getExtraString(
-    filament,
-    'bambu_tray_type',
-  );
+  const customProfileId =
+    getExtraString(
+      filament,
+      'bambu_filament_id',
+    );
 
-  const customMinTemp = getExtraNumber(
-    filament,
-    'bambu_nozzle_temp_min',
-  );
+  const customSettingId =
+    getExtraString(
+      filament,
+      'bambu_setting_id',
+    );
 
-  const customMaxTemp = getExtraNumber(
-    filament,
-    'bambu_nozzle_temp_max',
-  );
+  const customTrayType =
+    getExtraString(
+      filament,
+      'bambu_tray_type',
+    );
+
+  const customMinTemp =
+    getExtraNumber(
+      filament,
+      'bambu_nozzle_temp_min',
+    );
+
+  const customMaxTemp =
+    getExtraNumber(
+      filament,
+      'bambu_nozzle_temp_max',
+    );
 
   if (!customProfileId && !generic) {
-    return null;
+    return {
+      reason:
+        `No Bambu profile mapping for material "${filament.material}"`,
+    };
   }
 
-  const profileId = customProfileId || generic!.id;
+  /*
+   * A custom filament_id must be accompanied by its actual Bambu
+   * preset setting_id. Pairing a custom profile with a Generic
+   * setting_id would produce inconsistent printer metadata.
+   */
+  if (
+    customProfileId &&
+    !customSettingId
+  ) {
+    return {
+      reason:
+        'Custom bambu_filament_id requires bambu_setting_id',
+    };
+  }
+
+  const profileId =
+    customProfileId ||
+    generic!.id;
+
+  const settingId =
+    customSettingId ||
+    generic?.settingIdByModel[
+      printerModel.toUpperCase()
+    ];
+
+  if (!settingId) {
+    return {
+      reason:
+        `No Bambu setting_id mapping for ${printerModel} / ` +
+        `${filament.material}`,
+    };
+  }
 
   const trayType =
     customTrayType ||
     generic?.trayType ||
     filament.material;
 
-  /*
-   * When using one of our Generic mappings, use Bambu's matching
-   * temperature range.
-   *
-   * For a custom profile, explicit Spoolman extra fields win. If only
-   * Spoolman's normal single extruder temperature is known, create a
-   * sensible range around it.
-   */
   let minTemp =
     customMinTemp ??
     generic?.minTemp;
@@ -217,11 +326,20 @@ function resolveProfile(
     customProfileId &&
     filament.settings_extruder_temp != null
   ) {
-    if (customMinTemp === undefined) {
-      minTemp = filament.settings_extruder_temp - 20;
+    if (
+      customMinTemp === undefined
+    ) {
+      minTemp =
+        filament.settings_extruder_temp -
+        20;
     }
-    if (customMaxTemp === undefined) {
-      maxTemp = filament.settings_extruder_temp + 20;
+
+    if (
+      customMaxTemp === undefined
+    ) {
+      maxTemp =
+        filament.settings_extruder_temp +
+        20;
     }
   }
 
@@ -230,14 +348,20 @@ function resolveProfile(
     minTemp === undefined ||
     maxTemp === undefined
   ) {
-    return null;
+    return {
+      reason:
+        'Incomplete Bambu filament profile metadata',
+    };
   }
 
   return {
-    profileId,
-    trayType,
-    minTemp,
-    maxTemp,
+    profile: {
+      profileId,
+      settingId,
+      trayType,
+      minTemp,
+      maxTemp,
+    },
   };
 }
 
@@ -251,62 +375,156 @@ function trayMatches(
   );
 }
 
-/**
- * Propagate a Spoolman spool assignment into the corresponding
- * Bambu AMS/external tray.
+/*
+ * HAPrinter.prefix comes from the Bambu unique_id:
  *
- * This function deliberately does nothing for Creality/virtual printers.
+ *   X2D_20P5BJ660701399_print_status
+ *        ↓
+ *   x2d_20p5bj660701399
  */
+function parsePrinterIdentity(
+  prefix: string,
+): {
+  model: string;
+  printerId: string;
+} | null {
+  const separator =
+    prefix.indexOf('_');
+
+  if (
+    separator <= 0 ||
+    separator >= prefix.length - 1
+  ) {
+    return null;
+  }
+
+  return {
+    model:
+      prefix
+        .slice(0, separator)
+        .toUpperCase(),
+
+    printerId:
+      prefix
+        .slice(separator + 1)
+        .toUpperCase(),
+  };
+}
+
+/*
+ * HA's ams_number:
+ *
+ * regular AMS: 1..4
+ * firmware:    0..3
+ *
+ * AMS HT IDs 128+ already match firmware IDs.
+ */
+function toBambuAmsId(
+  amsNumber: number,
+): number {
+  return amsNumber >= 128
+    ? amsNumber
+    : amsNumber - 1;
+}
+
 export async function syncSpoolToBambuTray(
   spool: Spool,
   trayKey: string,
 ): Promise<BambuFilamentSyncResult> {
-  const ha = await HomeAssistantClient.fromConnection();
+  const ha =
+    await HomeAssistantClient
+      .fromConnection();
 
   if (!ha) {
     return {
       status: 'skipped',
-      reason: 'Home Assistant is not connected',
+      reason:
+        'Home Assistant is not connected',
     };
   }
 
-  const printers = await ha.discoverPrinters();
+  const printers =
+    await ha.discoverPrinters();
 
   let target:
     | {
         tray: HATray;
         printerName: string;
+        printerModel: string;
+        printerId: string;
+        amsNumber?: number;
+        external: boolean;
       }
     | undefined;
 
   for (const printer of printers) {
-    if (printer.brand !== 'bambu_lab') {
+    if (
+      printer.brand !==
+      'bambu_lab'
+    ) {
       continue;
     }
 
-    for (const ams of printer.ams_units) {
-      const tray = ams.trays.find((candidate) =>
-        trayMatches(candidate, trayKey),
+    const identity =
+      parsePrinterIdentity(
+        printer.prefix,
       );
+
+    if (!identity) {
+      continue;
+    }
+
+    for (
+      const ams of
+      printer.ams_units
+    ) {
+      const tray =
+        ams.trays.find(
+          (candidate) =>
+            trayMatches(
+              candidate,
+              trayKey,
+            ),
+        );
 
       if (tray) {
         target = {
           tray,
-          printerName: printer.name,
+          printerName:
+            printer.name,
+          printerModel:
+            identity.model,
+          printerId:
+            identity.printerId,
+          amsNumber:
+            ams.ams_number,
+          external: false,
         };
+
         break;
       }
     }
 
     if (!target) {
-      const tray = printer.external_spools.find((candidate) =>
-        trayMatches(candidate, trayKey),
-      );
+      const tray =
+        printer.external_spools.find(
+          (candidate) =>
+            trayMatches(
+              candidate,
+              trayKey,
+            ),
+        );
 
       if (tray) {
         target = {
           tray,
-          printerName: printer.name,
+          printerName:
+            printer.name,
+          printerModel:
+            identity.model,
+          printerId:
+            identity.printerId,
+          external: true,
         };
       }
     }
@@ -316,68 +534,229 @@ export async function syncSpoolToBambuTray(
     }
   }
 
-  /*
-   * trayKey might belong to a Creality printer or a virtual printer.
-   * That is not an error.
-   */
   if (!target) {
     return {
       status: 'skipped',
-      reason: 'Tray is not a discovered Bambu Lab tray',
+      reason:
+        'Tray is not a discovered Bambu Lab tray',
+    };
+  }
+
+  /*
+   * External spool IDs are 255/254 on current dual-extruder
+   * Bambu printers. Do not guess the HA External 1/2 → right/left
+   * mapping until it has been verified on the X2D.
+   */
+  if (target.external) {
+    return {
+      status: 'skipped',
+      reason:
+        'Bambu bridge external spool sync is not enabled yet',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
+    };
+  }
+
+  if (
+    target.amsNumber === undefined ||
+    target.tray.tray_number < 1
+  ) {
+    return {
+      status: 'failed',
+      reason:
+        'Invalid Bambu AMS/tray addressing',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
     };
   }
 
   const filament =
-    spool.filament as FilamentWithSyncMetadata;
+    spool.filament as
+      FilamentWithSyncMetadata;
 
-  const profile = resolveProfile(filament);
+  const profileResolution =
+    resolveProfile(
+      filament,
+      target.printerModel,
+    );
 
-  if (!profile) {
+  if (!profileResolution.profile) {
     return {
       status: 'skipped',
       reason:
-        `No Bambu profile mapping for material "${filament.material}"`,
-      printer: target.printerName,
-      entityId: target.tray.entity_id,
+        profileResolution.reason ||
+        'No Bambu profile mapping',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
     };
   }
 
-  const color = normalizeTrayColor(filament);
+  const profile =
+    profileResolution.profile;
+
+  const color =
+    normalizeTrayColor(
+      filament,
+    );
 
   if (!color) {
     return {
       status: 'skipped',
-      reason: 'Spoolman filament has no valid color',
-      printer: target.printerName,
-      entityId: target.tray.entity_id,
+      reason:
+        'Spoolman filament has no valid color',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
     };
   }
 
-  await ha.callService(
-    'bambu_lab',
-    'set_filament',
-    {
-      entity_id: target.tray.entity_id,
-      tray_info_idx: profile.profileId,
-      tray_color: color,
-      tray_type: profile.trayType,
-      nozzle_temp_min: profile.minTemp,
-      nozzle_temp_max: profile.maxTemp,
-    },
-  );
+  const bridge =
+    BambuBridgeClient
+      .fromEnvironment();
 
-  console.log(
-    `[bambu-filament-sync] ${target.printerName} / ` +
+  if (!bridge) {
+    return {
+      status: 'skipped',
+      reason:
+        'Bambu bridge is not configured (BAMBU_BRIDGE_URL)',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
+    };
+  }
+
+  const amsId =
+    toBambuAmsId(
+      target.amsNumber,
+    );
+
+  const trayId =
+    target.tray.tray_number - 1;
+
+  try {
+    const health =
+      await bridge.getHealth();
+
+    if (
+      !health.ready ||
+      !health.connected
+    ) {
+      return {
+        status: 'failed',
+        reason:
+          health.reconnecting
+            ? 'Bambu bridge is reconnecting to the printer'
+            : 'Bambu bridge printer is not ready',
+        printer:
+          target.printerName,
+        entityId:
+          target.tray.entity_id,
+        amsId,
+        trayId,
+      };
+    }
+
+    if (
+      health.printerId
+        .toUpperCase() !==
+      target.printerId
+        .toUpperCase()
+    ) {
+      return {
+        status: 'skipped',
+        reason:
+          `Bambu bridge controls printer ${health.printerId}, ` +
+          `but tray belongs to ${target.printerId}`,
+        printer:
+          target.printerName,
+        entityId:
+          target.tray.entity_id,
+      };
+    }
+
+    const result =
+      await bridge.setFilament(
+        amsId,
+        trayId,
+        {
+          profile:
+            profile.profileId,
+          setting:
+            profile.settingId,
+          type:
+            profile.trayType,
+          color,
+          tempMin:
+            profile.minTemp,
+          tempMax:
+            profile.maxTemp,
+        },
+      );
+
+    console.log(
+      `[bambu-filament-sync] ${target.printerName} / ` +
       `${target.tray.entity_id}: spool #${spool.id} -> ` +
-      `${profile.profileId} ${profile.trayType} ${color}`,
-  );
+      `${profile.profileId}/${profile.settingId} ` +
+      `${profile.trayType} ${color}; ` +
+      `AMS ${amsId}/${trayId}; verified in ${result.elapsedMs} ms`,
+    );
 
-  return {
-    status: 'synced',
-    printer: target.printerName,
-    entityId: target.tray.entity_id,
-    profileId: profile.profileId,
-    trayType: profile.trayType,
-    color,
-  };
+    return {
+      status: 'synced',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
+      profileId:
+        profile.profileId,
+      settingId:
+        profile.settingId,
+      trayType:
+        profile.trayType,
+      color,
+      amsId,
+      trayId,
+      verified:
+        result.verified,
+      elapsedMs:
+        result.elapsedMs,
+      sequenceId:
+        result.sequenceId,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof Error
+        ? error.message
+        : 'Unknown Bambu bridge error';
+
+    console.warn(
+      `[bambu-filament-sync] ${target.printerName}: ${reason}`,
+    );
+
+    return {
+      status: 'failed',
+      reason,
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
+      profileId:
+        profile.profileId,
+      settingId:
+        profile.settingId,
+      trayType:
+        profile.trayType,
+      color,
+      amsId,
+      trayId,
+    };
+  }
 }
