@@ -4,6 +4,7 @@ import { SpoolmanClient } from '@/lib/api/spoolman';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { applyLocationSync } from '@/lib/spool-location';
+import { syncSpoolToBambuTray } from '@/lib/bambu-filament-sync';
 
 export async function GET() {
   try {
@@ -66,14 +67,28 @@ export async function POST(request: NextRequest) {
 
     const updatedSpool = await client.assignSpoolToTray(spoolId, trayId);
 
+    // Best-effort: if this is a Bambu tray, propagate the assigned
+    // Spoolman filament metadata to the physical printer as well.
+    // A failure here must never undo the Spoolman assignment.
+    let printerSync;
+    try {
+      printerSync = await syncSpoolToBambuTray(updatedSpool, trayId);
+    } catch (error) {
+      console.warn('[bambu-filament-sync] Failed to update printer:', error);
+      printerSync = {
+        status: 'error' as const,
+        reason: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+
     // Log activity
     await createActivityLog({
       type: 'spool_change',
       message: `Assigned spool #${spoolId} to tray ${trayId}`,
-      details: { spoolId, trayId },
+      details: { spoolId, trayId, printerSync },
     });
 
-    return NextResponse.json({ spool: updatedSpool });
+    return NextResponse.json({ spool: updatedSpool, printerSync });
   } catch (error) {
     console.error('Error assigning spool:', error);
     return NextResponse.json({ error: 'Failed to assign spool' }, { status: 500 });
