@@ -3,7 +3,7 @@ name: Build SpoolmanSync test add-on
 on:
   push:
     branches:
-      - external-spool-name-improve-TEST-REPO
+      - bambu-filament-sync-TEST-REPO
   workflow_dispatch:
 
 permissions:
