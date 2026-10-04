@@ -15,6 +15,12 @@ if [ -f "$CONFIG_PATH" ]; then
         echo "Spoolman URL configured: $SPOOLMAN_URL"
     fi
 
+    BAMBU_BRIDGE_URL=$(jq -r '.bambu_bridge_url // ""' "$CONFIG_PATH")
+    if [ -n "$BAMBU_BRIDGE_URL" ] && [ "$BAMBU_BRIDGE_URL" != "null" ]; then
+        export BAMBU_BRIDGE_URL
+        echo "Bambu bridge configured: $BAMBU_BRIDGE_URL"
+    fi
+
     CONFIGURED_PORT=$(jq -r '.port // 3000' "$CONFIG_PATH")
     if [ -n "$CONFIGURED_PORT" ] && [ "$CONFIGURED_PORT" != "null" ]; then
         DIRECT_PORT="$CONFIGURED_PORT"
