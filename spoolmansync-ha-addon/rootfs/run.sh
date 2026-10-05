@@ -21,6 +21,13 @@ if [ -f "$CONFIG_PATH" ]; then
         echo "Bambu bridge configured: $BAMBU_BRIDGE_URL"
     fi
 
+    BAMBU_BRIDGE_TOKEN=$(jq -r '.bambu_bridge_token // ""' "$CONFIG_PATH")
+
+    if [ -n "$BAMBU_BRIDGE_TOKEN" ] && [ "$BAMBU_BRIDGE_TOKEN" != "null" ]; then
+        export BAMBU_BRIDGE_TOKEN
+        echo "Bambu bridge authentication configured"
+    fi
+
     CONFIGURED_PORT=$(jq -r '.port // 3000' "$CONFIG_PATH")
     if [ -n "$CONFIGURED_PORT" ] && [ "$CONFIGURED_PORT" != "null" ]; then
         DIRECT_PORT="$CONFIGURED_PORT"

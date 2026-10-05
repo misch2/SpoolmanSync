@@ -47,19 +47,34 @@ export class BambuBridgeError extends Error {
 
 export class BambuBridgeClient {
   private readonly baseUrl: string;
+  private readonly token?: string;
 
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
+  constructor(
+    baseUrl: string,
+    token?: string,
+  ) {
+    this.baseUrl =
+      baseUrl.replace(/\/+$/, '');
+
+    this.token =
+      token?.trim() || undefined;
   }
 
   static fromEnvironment(): BambuBridgeClient | null {
-    const url = process.env.BAMBU_BRIDGE_URL?.trim();
+    const url =
+      process.env.BAMBU_BRIDGE_URL?.trim();
 
     if (!url) {
       return null;
     }
 
-    return new BambuBridgeClient(url);
+    const token =
+      process.env.BAMBU_BRIDGE_TOKEN?.trim();
+
+    return new BambuBridgeClient(
+      url,
+      token,
+    );
   }
 
   private async fetchWithTimeout(
@@ -74,10 +89,21 @@ export class BambuBridgeClient {
     );
 
     try {
+      const headers =
+        new Headers(init.headers);
+
+      if (this.token) {
+        headers.set(
+          'Authorization',
+          `Bearer ${this.token}`,
+        );
+      }
+
       return await fetch(
         `${this.baseUrl}${path}`,
         {
           ...init,
+          headers,
           signal: controller.signal,
         },
       );
