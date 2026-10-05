@@ -50,6 +50,18 @@ const TRAY_ENTITY =
 const TRAY_UNIQUE_ID =
   'X2D_20P5BJ660701399_AMS_19C51A6516003GQ_tray_4';
 
+const EXTERNAL_LEFT_ENTITY =
+  'sensor.barca_x2d_external_spool';
+
+const EXTERNAL_LEFT_UNIQUE_ID =
+  'X2D_20P5BJ660701399_ExternalSpool_external_spool';
+
+const EXTERNAL_RIGHT_ENTITY =
+  'sensor.barca_x2d_external_spool_2';
+
+const EXTERNAL_RIGHT_UNIQUE_ID =
+  'X2D_20P5BJ660701399_ExternalSpool2_external_spool';
+
 function bambuPrinter() {
   return {
     brand: 'bambu_lab',
@@ -94,11 +106,23 @@ function bambuPrinter() {
     external_spools: [
       {
         entity_id:
-          'sensor.barca_x2d_external_spool_1',
+          EXTERNAL_LEFT_ENTITY,
         unique_id:
-          'X2D_20P5BJ660701399_external_spool_1',
+          EXTERNAL_LEFT_UNIQUE_ID,
         tray_number: 0,
         is_external: true,
+        slot_name:
+          'External 1',
+      },
+      {
+        entity_id:
+          EXTERNAL_RIGHT_ENTITY,
+        unique_id:
+          EXTERNAL_RIGHT_UNIQUE_ID,
+        tray_number: 0,
+        is_external: true,
+        slot_name:
+          'External 2',
       },
     ],
   };
@@ -744,31 +768,107 @@ describe(
     );
 
     it(
-      'does not sync external Bambu spool slots yet',
+      'syncs the left X2D external spool through virtual tray 254',
       async () => {
         const result =
           await syncSpoolToBambuTray(
             makeSpool({
               material: 'PETG',
+              colorHex: '1D8F99',
             }),
-            'X2D_20P5BJ660701399_external_spool_1',
+            EXTERNAL_LEFT_UNIQUE_ID,
           );
 
         expect(
           bridgeGetHealth,
-        ).not.toHaveBeenCalled();
+        ).toHaveBeenCalledOnce();
 
         expect(
           bridgeSetFilament,
-        ).not.toHaveBeenCalled();
+        ).toHaveBeenCalledWith(
+          254,
+          0,
+          {
+            profile: 'GFG99',
+            setting:
+              'GFSG99_15',
+            type: 'PETG',
+            color:
+              '1D8F99FF',
+            tempMin: 220,
+            tempMax: 260,
+          },
+        );
 
         expect(result).toEqual({
-          status: 'skipped',
-          reason:
-            'Bambu bridge external spool sync is not enabled yet',
+          status: 'synced',
           printer: 'Barča',
           entityId:
-            'sensor.barca_x2d_external_spool_1',
+            EXTERNAL_LEFT_ENTITY,
+          profileId: 'GFG99',
+          settingId:
+            'GFSG99_15',
+          trayType: 'PETG',
+          color: '1D8F99FF',
+          amsId: 254,
+          trayId: 0,
+          verified: true,
+          elapsedMs: 1204,
+          sequenceId:
+            '20009',
+        });
+      },
+    );
+
+    it(
+      'syncs the right X2D external spool through virtual tray 255',
+      async () => {
+        const result =
+          await syncSpoolToBambuTray(
+            makeSpool({
+              material: 'PLA',
+              colorHex: '1D8F99',
+            }),
+            EXTERNAL_RIGHT_UNIQUE_ID,
+          );
+
+        expect(
+          bridgeGetHealth,
+        ).toHaveBeenCalledOnce();
+
+        expect(
+          bridgeSetFilament,
+        ).toHaveBeenCalledWith(
+          255,
+          0,
+          {
+            profile: 'GFL99',
+            setting:
+              'GFSL99_17',
+            type: 'PLA',
+            color:
+              '1D8F99FF',
+            tempMin: 190,
+            tempMax: 240,
+          },
+        );
+
+        expect(result).toEqual({
+          status: 'synced',
+          printer: 'Barča',
+          entityId:
+            EXTERNAL_RIGHT_ENTITY,
+          profileId: 'GFL99',
+          settingId:
+            'GFSL99_17',
+          trayType: 'PLA',
+          color: '1D8F99FF',
+          amsId: 255,
+          trayId: 0,
+          verified: true,
+          elapsedMs: 1204,
+          sequenceId:
+            '20009',
         });
       },
     );
