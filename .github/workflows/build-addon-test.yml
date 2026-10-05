@@ -18,11 +18,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          name: spoolmansync-dev-builder
+          keep-state: true
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -36,6 +36,6 @@ jobs:
         with:
           context: .
           file: ./spoolmansync-ha-addon/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/spoolmansync-addon:1.6.14-filamentsync.4
