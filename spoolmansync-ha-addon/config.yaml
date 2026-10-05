@@ -29,6 +29,7 @@ options:
 schema:
   spoolman_url: url?
   bambu_bridge_url: url?
+  bambu_bridge_token: password?
   port: "int(1024,65535)?"
 
 # Use host network so the add-on can reach services on Tailscale, VPNs, etc.
