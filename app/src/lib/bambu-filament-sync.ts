@@ -456,6 +456,55 @@ function parsePrinterIdentityFromTray(
   };
 }
 
+const VIRTUAL_TRAY_MAIN_ID = 255;
+const VIRTUAL_TRAY_DEPUTY_ID = 254;
+
+/*
+ * Bambu virtual trays:
+ *
+ * dual-nozzle printer:
+ *   ..._ExternalSpool_external_spool  -> left  -> 254
+ *   ..._ExternalSpool2_external_spool -> right -> 255
+ *
+ * single-nozzle printer:
+ *   the single external spool uses 255.
+ */
+function toBambuExternalAmsId(
+  tray: HATray,
+  externalSpoolCount: number,
+): number | null {
+  if (externalSpoolCount <= 1) {
+    return VIRTUAL_TRAY_MAIN_ID;
+  }
+
+  const uniqueId =
+    tray.unique_id || '';
+
+  const match =
+    uniqueId.match(
+      /_ExternalSpool(\d*)_external_spool$/i,
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const index =
+    match[1]
+      ? Number(match[1])
+      : 1;
+
+  if (index === 1) {
+    return VIRTUAL_TRAY_DEPUTY_ID;
+  }
+
+  if (index === 2) {
+    return VIRTUAL_TRAY_MAIN_ID;
+  }
+
+  return null;
+}
+
 /*
  * HA's ams_number:
  *
@@ -498,6 +547,7 @@ export async function syncSpoolToBambuTray(
       printerModel: string;
       printerId: string;
       amsNumber?: number;
+      externalAmsId?: number;
       external: boolean;
     }
     | undefined;
@@ -592,6 +642,12 @@ export async function syncSpoolToBambuTray(
           continue;
         }
 
+        const externalAmsId =
+          toBambuExternalAmsId(
+            tray,
+            printer.external_spools.length,
+          );
+
         target = {
           tray,
           printerName:
@@ -600,6 +656,8 @@ export async function syncSpoolToBambuTray(
             identity.model,
           printerId:
             identity.printerId,
+          externalAmsId:
+            externalAmsId ?? undefined,
           external: true,
         };
       }
@@ -668,36 +726,49 @@ export async function syncSpoolToBambuTray(
     };
   }
 
-  /*
-   * External spool IDs are 255/254 on current dual-extruder
-   * Bambu printers. Do not guess the HA External 1/2 → right/left
-   * mapping until it has been verified on the X2D.
-   */
-  if (target.external) {
-    return {
-      status: 'skipped',
-      reason:
-        'Bambu bridge external spool sync is not enabled yet',
-      printer:
-        target.printerName,
-      entityId:
-        target.tray.entity_id,
-    };
-  }
+  let amsId: number;
+  let trayId: number;
 
-  if (
-    target.amsNumber === undefined ||
-    target.tray.tray_number < 1
-  ) {
-    return {
-      status: 'failed',
-      reason:
-        'Invalid Bambu AMS/tray addressing',
-      printer:
-        target.printerName,
-      entityId:
-        target.tray.entity_id,
-    };
+  if (target.external) {
+    if (target.externalAmsId === undefined) {
+      return {
+        status: 'failed',
+        reason:
+          'Unable to map Bambu external spool to virtual tray',
+        printer:
+          target.printerName,
+        entityId:
+          target.tray.entity_id,
+      };
+    }
+
+    amsId =
+      target.externalAmsId;
+
+    trayId = 0;
+  } else {
+    if (
+      target.amsNumber === undefined ||
+      target.tray.tray_number < 1
+    ) {
+      return {
+        status: 'failed',
+        reason:
+          'Invalid Bambu AMS/tray addressing',
+        printer:
+          target.printerName,
+        entityId:
+          target.tray.entity_id,
+      };
+    }
+
+    amsId =
+      toBambuAmsId(
+        target.amsNumber,
+      );
+
+    trayId =
+      target.tray.tray_number - 1;
   }
 
   const filament =
@@ -758,14 +829,6 @@ export async function syncSpoolToBambuTray(
         target.tray.entity_id,
     };
   }
-
-  const amsId =
-    toBambuAmsId(
-      target.amsNumber,
-    );
-
-  const trayId =
-    target.tray.tray_number - 1;
 
   try {
     const health =
