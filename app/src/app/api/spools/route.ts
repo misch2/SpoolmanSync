@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { SpoolmanClient } from '@/lib/api/spoolman';
+import { SpoolmanClient, parseExtraValue } from '@/lib/api/spoolman';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { applyLocationSync } from '@/lib/spool-location';
+import { syncSpoolToBambuTray, clearBambuTray, type BambuTrayClearResult } from '@/lib/bambu-filament-sync';
 
 export async function GET() {
   try {
@@ -66,14 +67,28 @@ export async function POST(request: NextRequest) {
 
     const updatedSpool = await client.assignSpoolToTray(spoolId, trayId);
 
+    // Best-effort: if this is a Bambu tray, propagate the assigned
+    // Spoolman filament metadata to the physical printer as well.
+    // A failure here must never undo the Spoolman assignment.
+    let printerSync;
+    try {
+      printerSync = await syncSpoolToBambuTray(updatedSpool, trayId);
+    } catch (error) {
+      console.warn('[bambu-filament-sync] Failed to update printer:', error);
+      printerSync = {
+        status: 'error' as const,
+        reason: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+
     // Log activity
     await createActivityLog({
       type: 'spool_change',
       message: `Assigned spool #${spoolId} to tray ${trayId}`,
-      details: { spoolId, trayId },
+      details: { spoolId, trayId, printerSync },
     });
 
-    return NextResponse.json({ spool: updatedSpool });
+    return NextResponse.json({ spool: updatedSpool, printerSync });
   } catch (error) {
     console.error('Error assigning spool:', error);
     return NextResponse.json({ error: 'Failed to assign spool' }, { status: 500 });
@@ -115,16 +130,32 @@ export async function DELETE(request: NextRequest) {
     // in unassignSpoolFromTray only applies if we set the location.
     await applyLocationSync(client);
 
+    // Capture the old assignment before Spoolman clears active_tray.
+    const spool = await client.getSpool(spoolId);
+    const oldTrayKey = parseExtraValue(spool.extra?.['active_tray']);
     const updatedSpool = await client.unassignSpoolFromTray(spoolId);
+
+    let printerSync: BambuTrayClearResult | undefined;
+    if (oldTrayKey) {
+      try {
+        printerSync = await clearBambuTray(oldTrayKey);
+      } catch (error) {
+        printerSync = {
+          status: 'failed',
+          reason: error instanceof Error ? error.message : 'Unknown error',
+        };
+      }
+      console.log('[bambu-filament-sync] Unassign printer clear:', printerSync);
+    }
 
     // Log activity
     await createActivityLog({
       type: 'spool_change',
       message: `Unassigned spool #${spoolId} from tray`,
-      details: { spoolId },
+      details: { spoolId, trayId: oldTrayKey || undefined, printerSync },
     });
 
-    return NextResponse.json({ spool: updatedSpool });
+    return NextResponse.json({ spool: updatedSpool, printerSync });
   } catch (error) {
     console.error('Error unassigning spool:', error);
     return NextResponse.json({ error: 'Failed to unassign spool' }, { status: 500 });

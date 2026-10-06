@@ -1,9 +1,9 @@
-name: SpoolmanSync
-version: "1.6.14"
-slug: spoolmansync-ha-addon
+name: SpoolmanSync DEV
+version: "1.6.14-filamentsync.6"
+slug: spoolmansync-ha-addon-dev
 description: Automatic filament tracking for Bambu Lab and Creality printers with Spoolman
-url: https://github.com/gibz104/SpoolmanSync
-image: ghcr.io/gibz104/spoolmansync-addon
+url: https://github.com/misch2/SpoolmanSync
+image: ghcr.io/misch2/spoolmansync-addon
 arch:
   - aarch64
   - amd64
@@ -28,6 +28,8 @@ options:
   port: 3000
 schema:
   spoolman_url: url?
+  bambu_bridge_url: url?
+  bambu_bridge_token: password?
   port: "int(1024,65535)?"
 
 # Use host network so the add-on can reach services on Tailscale, VPNs, etc.
