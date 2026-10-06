@@ -5,6 +5,23 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.14-filamentsync] - 2026-10-06
+
+Changes from development versions `1.6.14-filamentsync.1` through `1.6.14-filamentsync.6`.
+
+### Added
+- Assigning a Spoolman spool to a Bambu Lab tray now also sends its filament profile, material, color, and nozzle temperature range to the printer through a separately configured Bambu bridge. Built-in Generic preset mappings cover the X2D; filament extra fields can supply custom `bambu_filament_id`, `bambu_setting_id`, `bambu_tray_type`, `bambu_nozzle_temp_min`, and `bambu_nozzle_temp_max` metadata. Unsupported mappings or invalid colors are skipped with a reason.
+- Bambu bridge configuration through `BAMBU_BRIDGE_URL` and optional bearer authentication through `BAMBU_BRIDGE_TOKEN`. Home Assistant add-on users can set the corresponding `bambu_bridge_url` and `bambu_bridge_token` options.
+- Filament sync supports external spools, including both external slots on dual-nozzle printers.
+- Unassigning a spool also asks the Bambu bridge to clear the old printer slot, including external slots. Assignment and clearing results are returned as `printerSync` and recorded in the activity log; a printer update failure does not undo the Spoolman change.
+
+### Fixed
+- Corrected Bambu AMS and tray addressing, resolving Home Assistant entity IDs and stable unique IDs to the intended printer slot. External slots use their virtual AMS IDs with tray index zero.
+- Printer writes check that the bridge is connected, ready, and controlling the printer that owns the tray. Sync and clear responses are accepted as successful only when the bridge reports the operation as verified.
+
+### Changed
+- Added a separate SpoolmanSync DEV add-on and versioned test-image builds for this fork. The build workflow runs on a self-hosted Linux runner, builds the amd64 add-on image, and keeps its Docker Buildx state to speed up subsequent builds. The standard Docker publishing workflow is disabled on this development branch.
+
 ## [1.6.14] - 2026-10-02
 
 ### Added
