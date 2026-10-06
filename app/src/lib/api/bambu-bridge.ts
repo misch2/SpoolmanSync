@@ -28,6 +28,15 @@ export interface BambuBridgeFilamentResult {
   trayId: number;
 }
 
+export interface BambuBridgeClearResult {
+  status: 'cleared';
+  verified: true;
+  elapsedMs: number;
+  sequenceId: string;
+  amsId: number;
+  trayId: number;
+}
+
 interface BambuBridgeErrorResponse {
   status?: string;
   error?: string;
@@ -219,6 +228,55 @@ export class BambuBridgeClient {
     ) {
       throw new BambuBridgeError(
         'Bambu bridge did not verify the filament update',
+        response.status,
+        body as unknown as BambuBridgeErrorResponse,
+      );
+    }
+
+    return result;
+  }
+
+  async clearFilament(
+    amsId: number,
+    trayId: number,
+  ): Promise<BambuBridgeClearResult> {
+    const response = await this.fetchWithTimeout(
+      `/api/v1/ams/${amsId}/trays/${trayId}/filament`,
+      {
+        method: 'DELETE',
+      },
+
+      // Bridge itself can wait for printer reply + fresh push_status.
+      12000,
+    );
+
+    const body =
+      await this.readJson<
+        BambuBridgeClearResult | BambuBridgeErrorResponse
+      >(response);
+
+    if (!response.ok) {
+      const errorBody =
+        body as BambuBridgeErrorResponse;
+
+      throw new BambuBridgeError(
+        errorBody.error
+          ? `Bambu bridge: ${errorBody.error}`
+          : `Bambu bridge returned HTTP ${response.status}`,
+        response.status,
+        errorBody,
+      );
+    }
+
+    const result =
+      body as BambuBridgeClearResult;
+
+    if (
+      result.status !== 'cleared' ||
+      result.verified !== true
+    ) {
+      throw new BambuBridgeError(
+        'Bambu bridge did not verify the filament clear',
         response.status,
         body as unknown as BambuBridgeErrorResponse,
       );

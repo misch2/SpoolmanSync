@@ -50,6 +50,32 @@ export interface BambuFilamentSyncResult {
   sequenceId?: string;
 }
 
+export interface BambuTrayClearResult {
+  status: 'cleared' | 'skipped' | 'failed';
+  reason?: string;
+  printer?: string;
+  entityId?: string;
+  amsId?: number;
+  trayId?: number;
+  verified?: boolean;
+  elapsedMs?: number;
+  sequenceId?: string;
+}
+
+interface BambuTrayTarget {
+  tray: HATray;
+  printerName: string;
+  printerModel: string;
+  printerId: string;
+  amsNumber?: number;
+  externalAmsId?: number;
+  external: boolean;
+}
+
+type TrayResolution =
+  | { target: BambuTrayTarget; amsId: number; trayId: number }
+  | { status: 'skipped' | 'failed'; reason: string; printer?: string; entityId?: string; amsId?: number; trayId?: number };
+
 type FilamentWithSyncMetadata =
   Spool['filament'] & {
     settings_extruder_temp?: number | null;
@@ -521,10 +547,9 @@ function toBambuAmsId(
     : amsNumber - 1;
 }
 
-export async function syncSpoolToBambuTray(
-  spool: Spool,
+async function resolveBambuTrayTarget(
   trayKey: string,
-): Promise<BambuFilamentSyncResult> {
+): Promise<TrayResolution> {
   const ha =
     await HomeAssistantClient
       .fromConnection();
@@ -540,17 +565,7 @@ export async function syncSpoolToBambuTray(
   const printers =
     await ha.discoverPrinters();
 
-  let target:
-    | {
-      tray: HATray;
-      printerName: string;
-      printerModel: string;
-      printerId: string;
-      amsNumber?: number;
-      externalAmsId?: number;
-      external: boolean;
-    }
-    | undefined;
+  let target: BambuTrayTarget | undefined;
 
   for (const printer of printers) {
     if (
@@ -771,6 +786,66 @@ export async function syncSpoolToBambuTray(
       target.tray.tray_number - 1;
   }
 
+  return { target, amsId, trayId };
+}
+
+async function checkBambuBridgeTarget(
+  bridge: BambuBridgeClient,
+  target: BambuTrayTarget,
+  amsId: number,
+  trayId: number,
+): Promise<Exclude<TrayResolution, { target: BambuTrayTarget }> | undefined> {
+  const health =
+    await bridge.getHealth();
+
+  if (
+    !health.ready ||
+    !health.connected
+  ) {
+    return {
+      status: 'failed',
+      reason:
+        health.reconnecting
+          ? 'Bambu bridge is reconnecting to the printer'
+          : 'Bambu bridge printer is not ready',
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
+      amsId,
+      trayId,
+    };
+  }
+
+  if (
+    health.printerId
+      .toUpperCase() !==
+    target.printerId
+      .toUpperCase()
+  ) {
+    return {
+      status: 'skipped',
+      reason:
+        `Bambu bridge controls printer ${health.printerId}, ` +
+        `but tray belongs to ${target.printerId}`,
+      printer:
+        target.printerName,
+      entityId:
+        target.tray.entity_id,
+    };
+  }
+
+  return undefined;
+}
+
+export async function syncSpoolToBambuTray(
+  spool: Spool,
+  trayKey: string,
+): Promise<BambuFilamentSyncResult> {
+  const resolution = await resolveBambuTrayTarget(trayKey);
+  if (!('target' in resolution)) return resolution;
+  const { target, amsId, trayId } = resolution;
+
   const filament =
     spool.filament as
     FilamentWithSyncMetadata;
@@ -831,45 +906,8 @@ export async function syncSpoolToBambuTray(
   }
 
   try {
-    const health =
-      await bridge.getHealth();
-
-    if (
-      !health.ready ||
-      !health.connected
-    ) {
-      return {
-        status: 'failed',
-        reason:
-          health.reconnecting
-            ? 'Bambu bridge is reconnecting to the printer'
-            : 'Bambu bridge printer is not ready',
-        printer:
-          target.printerName,
-        entityId:
-          target.tray.entity_id,
-        amsId,
-        trayId,
-      };
-    }
-
-    if (
-      health.printerId
-        .toUpperCase() !==
-      target.printerId
-        .toUpperCase()
-    ) {
-      return {
-        status: 'skipped',
-        reason:
-          `Bambu bridge controls printer ${health.printerId}, ` +
-          `but tray belongs to ${target.printerId}`,
-        printer:
-          target.printerName,
-        entityId:
-          target.tray.entity_id,
-      };
-    }
+    const bridgeState = await checkBambuBridgeTarget(bridge, target, amsId, trayId);
+    if (bridgeState) return bridgeState;
 
     const result =
       await bridge.setFilament(
@@ -946,6 +984,39 @@ export async function syncSpoolToBambuTray(
       color,
       amsId,
       trayId,
+    };
+  }
+}
+
+/** Clear a discovered physical tray without resolving any filament metadata. */
+export async function clearBambuTray(trayKey: string): Promise<BambuTrayClearResult> {
+  let diagnostics: Omit<BambuTrayClearResult, 'status'> = {};
+  try {
+    const resolution = await resolveBambuTrayTarget(trayKey);
+    if (!('target' in resolution)) return resolution;
+    const { target, amsId, trayId } = resolution;
+    diagnostics = { printer: target.printerName, entityId: target.tray.entity_id, amsId, trayId };
+
+    const bridge = BambuBridgeClient.fromEnvironment();
+    if (!bridge) {
+      return { ...diagnostics, status: 'skipped', reason: 'Bambu bridge is not configured (BAMBU_BRIDGE_URL)' };
+    }
+    const bridgeState = await checkBambuBridgeTarget(bridge, target, amsId, trayId);
+    if (bridgeState) return { ...diagnostics, ...bridgeState };
+
+    const result = await bridge.clearFilament(amsId, trayId);
+    return {
+      ...diagnostics,
+      status: 'cleared',
+      verified: result.verified,
+      elapsedMs: result.elapsedMs,
+      sequenceId: result.sequenceId,
+    };
+  } catch (error) {
+    return {
+      ...diagnostics,
+      status: 'failed',
+      reason: error instanceof Error ? error.message : 'Unknown Bambu bridge error',
     };
   }
 }

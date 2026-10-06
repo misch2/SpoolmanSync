@@ -15,6 +15,7 @@ const {
   bridgeFromEnvironment,
   bridgeGetHealth,
   bridgeSetFilament,
+  bridgeClearFilament,
 } = vi.hoisted(() => ({
   fromConnection: vi.fn(),
   discoverPrinters: vi.fn(),
@@ -22,6 +23,7 @@ const {
   bridgeFromEnvironment: vi.fn(),
   bridgeGetHealth: vi.fn(),
   bridgeSetFilament: vi.fn(),
+  bridgeClearFilament: vi.fn(),
 }));
 
 vi.mock('@/lib/api/homeassistant', () => ({
@@ -39,6 +41,7 @@ vi.mock('@/lib/api/bambu-bridge', () => ({
 
 const {
   syncSpoolToBambuTray,
+  clearBambuTray,
 } = await import('./bambu-filament-sync');
 
 const PRINTER_ID =
@@ -181,6 +184,8 @@ beforeEach(() => {
   bridgeFromEnvironment.mockReset();
   bridgeGetHealth.mockReset();
   bridgeSetFilament.mockReset();
+  bridgeClearFilament.mockReset();
+  bridgeClearFilament.mockResolvedValue({ status: 'cleared', verified: true, elapsedMs: 1234, sequenceId: '20001' });
 
   fromConnection.mockResolvedValue({
     discoverPrinters,
@@ -195,6 +200,7 @@ beforeEach(() => {
       bridgeGetHealth,
     setFilament:
       bridgeSetFilament,
+    clearFilament: bridgeClearFilament,
   });
 
   bridgeGetHealth.mockResolvedValue({
@@ -874,3 +880,95 @@ describe(
     );
   },
 );
+describe('clearBambuTray', () => {
+  it.each([
+    [TRAY_UNIQUE_ID, 0, 3],
+    [TRAY_ENTITY, 0, 3],
+    [EXTERNAL_LEFT_UNIQUE_ID, 254, 0],
+    [EXTERNAL_RIGHT_UNIQUE_ID, 255, 0],
+    [EXTERNAL_LEFT_ENTITY, 254, 0],
+    [EXTERNAL_RIGHT_ENTITY, 255, 0],
+  ])('clears %s at %i/%i without filament metadata', async (key, amsId, trayId) => {
+    const result = await clearBambuTray(key as string);
+    expect(bridgeClearFilament).toHaveBeenCalledWith(amsId, trayId);
+    expect(bridgeSetFilament).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      status: 'cleared', printer: bambuPrinter().name,
+      entityId: expect.any(String), amsId, trayId,
+      verified: true, elapsedMs: 1234, sequenceId: '20001',
+    }));
+    expect(result).not.toHaveProperty('profileId');
+  });
+
+  it('preserves direct AMS HT addressing', async () => {
+    const printer = bambuPrinter();
+    printer.ams_units[0].ams_number = 128;
+    discoverPrinters.mockResolvedValue([printer]);
+    await clearBambuTray(TRAY_ENTITY);
+    expect(bridgeClearFilament).toHaveBeenCalledWith(128, 3);
+  });
+
+  it('uses 255 for a single external holder', async () => {
+    const printer = bambuPrinter();
+    printer.external_spools = [printer.external_spools[0]];
+    discoverPrinters.mockResolvedValue([printer]);
+    await clearBambuTray(EXTERNAL_LEFT_ENTITY);
+    expect(bridgeClearFilament).toHaveBeenCalledWith(255, 0);
+  });
+
+  it('fails an indeterminate dual external mapping regardless of slot name', async () => {
+    const printer = bambuPrinter();
+    printer.external_spools[0].unique_id = 'X2D_20P5BJ660701399_unknown';
+    printer.external_spools[0].slot_name = 'Right';
+    discoverPrinters.mockResolvedValue([printer]);
+    expect(await clearBambuTray(EXTERNAL_LEFT_ENTITY)).toEqual(expect.objectContaining({
+      status: 'failed', reason: 'Unable to map Bambu external spool to virtual tray',
+    }));
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
+  it('skips when HA is unavailable', async () => {
+    fromConnection.mockResolvedValue(null);
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual({ status: 'skipped', reason: 'Home Assistant is not connected' });
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+    expect(bridgeGetHealth).not.toHaveBeenCalled();
+  });
+
+  it.each(['unknown', TRAY_ENTITY])('skips an unknown/non-Bambu tray %s', async key => {
+    const printer = bambuPrinter();
+    printer.brand = 'creality';
+    discoverPrinters.mockResolvedValue([printer]);
+    expect(await clearBambuTray(key)).toEqual({ status: 'skipped', reason: 'Tray is not a discovered Bambu Lab tray' });
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+    expect(bridgeGetHealth).not.toHaveBeenCalled();
+  });
+
+  it('skips when the bridge is not configured', async () => {
+    bridgeFromEnvironment.mockReturnValue(null);
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'skipped', reason: expect.stringContaining('not configured'), amsId: 0, trayId: 3 }));
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
+  it('fails when bridge health is unavailable', async () => {
+    bridgeGetHealth.mockRejectedValue(new Error('Connection refused'));
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', reason: 'Connection refused', entityId: TRAY_ENTITY, amsId: 0, trayId: 3 }));
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('fails when the printer is not ready (reconnecting=%s)', async reconnecting => {
+    bridgeGetHealth.mockResolvedValue({ ready: false, connected: false, reconnecting, printerId: PRINTER_ID });
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', reason: expect.stringContaining(reconnecting ? 'reconnecting' : 'not ready'), amsId: 0, trayId: 3 }));
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
+  it('skips a bridge controlling another printer', async () => {
+    bridgeGetHealth.mockResolvedValue({ ready: true, connected: true, printerId: 'OTHER' });
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'skipped', reason: expect.stringContaining('OTHER'), amsId: 0, trayId: 3 }));
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
+  it('records a rejected clear request', async () => {
+    bridgeClearFilament.mockRejectedValue(new Error('Clear verification failed'));
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', reason: 'Clear verification failed', amsId: 0, trayId: 3 }));
+  });
+});
