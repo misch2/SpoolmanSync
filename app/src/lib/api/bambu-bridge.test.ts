@@ -43,7 +43,7 @@ describe('BambuBridgeClient.clearFilament', () => {
 
   it('wraps network errors', async () => {
     fetchMock.mockRejectedValue(new Error('Connection refused'));
-    await expect(client.clearFilament(0, 3)).rejects.toThrow(new BambuBridgeError('Bambu bridge request failed: Connection refused'));
+    await expect(client.clearFilament(0, 3)).rejects.toMatchObject({ name: 'BambuBridgeError', response: { error: 'bridge_unavailable' } });
   });
 
   it.each(['clear', 'set'])('uses the same 12-second timeout for %s', async operation => {

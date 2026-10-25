@@ -31,6 +31,7 @@ import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { HATray } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
 import { buildSpoolSearchValue, parseExtraValue } from '@/lib/api/spoolman';
+import { printerSyncMessage, type PrinterSyncStatus } from '@/lib/printer-sync-status';
 
 type SortBy = 'id' | 'name' | 'material' | 'vendor';
 
@@ -58,10 +59,13 @@ interface TraySlotProps {
   tray: HATray;
   assignedSpool?: Spool;
   spools: Spool[];
-  onAssign: (spoolId: number) => void;
+  onAssign: (spoolId: number, prepare?: boolean) => void;
   onUnassign?: (spoolId: number) => void;
   mismatch?: MismatchInfo;
   showLocation?: boolean;
+  canPrepare?: boolean;
+  sync?: PrinterSyncStatus;
+  onSyncAction?: (id: string, action: 'retry' | 'cancel') => void;
 }
 
 /**
@@ -102,8 +106,9 @@ function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   });
 }
 
-export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation }: TraySlotProps) {
+export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation, canPrepare, sync, onSyncAction }: TraySlotProps) {
   const [open, setOpen] = useState(false);
+  const [prepare, setPrepare] = useState(false);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const [enabledFields, setEnabledFields] = useState<FilterField[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>('id');
@@ -287,6 +292,19 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
         </span>
       )}
       </div>
+      {sync && sync.status !== 'cancelled' && sync.status !== 'skipped' && (
+        <div className="mt-1 space-y-1 text-xs" role="status">
+          <p className={['failed', 'expired'].includes(sync.status) ? 'text-red-600' : 'text-muted-foreground'}>
+            #{sync.spoolId}: {printerSyncMessage(sync)}
+          </p>
+          {['failed', 'expired'].includes(sync.status) && onSyncAction && (
+            <Button size="sm" variant="outline" onClick={() => onSyncAction(sync.id, 'retry')}>Retry</Button>
+          )}
+          {['pending', 'syncing', 'waiting_insertion'].includes(sync.status) && onSyncAction && (
+            <Button size="sm" variant="ghost" onClick={() => onSyncAction(sync.id, 'cancel')}>Cancel sync</Button>
+          )}
+        </div>
+      )}
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
@@ -340,6 +358,12 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
           </div>
         )}
 
+        {canPrepare && (
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={prepare} onChange={e => setPrepare(e.target.checked)} />
+            Prepare now; assign and sync after filament insertion
+          </label>
+        )}
         <Command className="rounded-lg border shadow-md">
           {/* Filter bar with sort */}
           {hasFilterOptions ? (
@@ -386,7 +410,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
                   key={spool.id}
                   value={buildSpoolSearchValue(spool)}
                   onSelect={() => {
-                    onAssign(spool.id);
+                    onAssign(spool.id, !!canPrepare && prepare);
                     setOpen(false);
                   }}
                   className="flex items-center gap-3 py-2"

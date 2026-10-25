@@ -180,7 +180,7 @@ export class SpoolmanClient {
   private locationMatcher: LocationMatcher | null = null;
   private unassignedLocation = '';
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, private readonly requestTimeoutMs = 15000) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
@@ -258,6 +258,7 @@ export class SpoolmanClient {
   private async fetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(`${this.baseUrl}/api/v1${endpoint}`, {
       ...options,
+      signal: options.signal || AbortSignal.timeout(this.requestTimeoutMs),
       headers: {
         'Content-Type': 'application/json',
         ...options.headers,

@@ -5,6 +5,22 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Persistent Bambu printer synchronization with bounded retries, restart recovery,
+  visible pending/verified/failed states and retry/cancel actions.
+- Prepare a spool before insertion in regular Bambu AMS slots, with fresh presence,
+  RFID and printer-state checks. Current inventory remains unchanged until activation.
+- Correlated, bounded printer/backend diagnostics without credentials or raw payloads.
+
+### Fixed
+- Dashboard and QR/NFC assignment no longer imply printer verification from a
+  successful inventory response. Stale requests and delayed CLEAR cannot supersede
+  newer assignments. Shared helper exports no longer block Next.js route type checks.
+- Docker builds exclude local dependencies, databases and secrets; the entrypoint
+  is normalized for Linux when building from a Windows checkout.
+
 ## [1.6.14-filamentsync] - 2026-10-06
 
 Changes from development versions `1.6.14-filamentsync.1` through `1.6.14-filamentsync.6`.

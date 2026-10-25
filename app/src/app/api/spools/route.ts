@@ -4,7 +4,9 @@ import { SpoolmanClient, parseExtraValue } from '@/lib/api/spoolman';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { applyLocationSync } from '@/lib/spool-location';
-import { syncSpoolToBambuTray, clearBambuTray, type BambuTrayClearResult } from '@/lib/bambu-filament-sync';
+import { withAssignmentLock } from '@/lib/assignment-lock';
+import { createSyncIntent, activateSyncIntent, cancelSyncIntent, prepareSpool } from '@/lib/printer-sync';
+import { bridgeFailure } from '@/lib/bambu-diagnostics';
 
 export async function GET() {
   try {
@@ -28,9 +30,13 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  return withAssignmentLock(() => assign(request));
+}
+async function assign(request: NextRequest) {
   try {
     const body = await request.json();
-    const { spoolId, trayId } = body;
+    const { spoolId, trayId, prepare = false } = body;
+    if (typeof prepare !== 'boolean') return NextResponse.json({ error: 'prepare must be boolean' }, { status: 400 });
 
     // Validate inputs before touching Spoolman to avoid malformed requests / 500s
     if (typeof spoolId !== 'number' || !Number.isFinite(spoolId)) {
@@ -50,7 +56,7 @@ export async function POST(request: NextRequest) {
 
     // Wire up entity_id → unique_id resolver for defense-in-depth
     let entityIdMap: Map<string, string> | null = null;
-    client.setEntityIdResolver(async (entityId: string) => {
+    const resolveTray = async (entityId: string) => {
       if (!entityIdMap) {
         try {
           const haClient = await HomeAssistantClient.fromConnection();
@@ -59,34 +65,42 @@ export async function POST(request: NextRequest) {
         if (!entityIdMap) entityIdMap = new Map();
       }
       return entityIdMap.get(entityId) || entityId;
-    });
+    };
+    client.setEntityIdResolver(resolveTray);
 
     // Location sync (no-op unless enabled) — keep Spoolman's location field in
     // step with the tray this spool is being assigned to.
     await applyLocationSync(client);
 
-    const updatedSpool = await client.assignSpoolToTray(spoolId, trayId);
-
-    // Best-effort: if this is a Bambu tray, propagate the assigned
-    // Spoolman filament metadata to the physical printer as well.
-    // A failure here must never undo the Spoolman assignment.
-    let printerSync;
-    try {
-      printerSync = await syncSpoolToBambuTray(updatedSpool, trayId);
-    } catch (error) {
-      console.warn('[bambu-filament-sync] Failed to update printer:', error);
-      printerSync = {
-        status: 'error' as const,
-        reason: error instanceof Error ? error.message : 'Unknown error',
-      };
+    if (prepare) {
+      try {
+        const printerSync = await prepareSpool(client, spoolId, trayId);
+        return NextResponse.json({ spool: await client.getSpool(spoolId), printerSync });
+      } catch (error) {
+        console.warn('[printer-sync]', JSON.stringify({ time: new Date().toISOString(), event: 'preparation_failed', spoolId, ...bridgeFailure(error) }));
+        return NextResponse.json({ error: 'Could not prepare spool. Check bridge connection and use a regular Bambu AMS slot.' }, { status: 400 });
+      }
     }
+    const job = await createSyncIntent(await resolveTray(trayId), spoolId, 'set');
+    let updatedSpool;
+    try {
+      updatedSpool = await client.assignSpoolToTray(spoolId, trayId);
+    } catch {
+      await cancelSyncIntent(job, 'Spoolman assignment failed');
+      throw new Error('Spoolman assignment failed');
+    }
+    // Intent already exists if the process stops after the Spoolman commit.
+    // Recovery verifies current inventory before issuing any printer command.
+    let printerSync;
+    try { printerSync = await activateSyncIntent(job); }
+    catch { printerSync = { status: 'pending', reason: 'Assigned in Spoolman — synchronization will recover from saved intent' }; }
 
     // Log activity
     await createActivityLog({
       type: 'spool_change',
       message: `Assigned spool #${spoolId} to tray ${trayId}`,
       details: { spoolId, trayId, printerSync },
-    });
+    }).catch(() => console.warn('[printer-sync] Assignment activity log unavailable'));
 
     return NextResponse.json({ spool: updatedSpool, printerSync });
   } catch (error) {
@@ -96,6 +110,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  return withAssignmentLock(() => unassign(request));
+}
+async function unassign(request: NextRequest) {
   try {
     const body = await request.json();
     const { spoolId } = body;
@@ -133,19 +150,17 @@ export async function DELETE(request: NextRequest) {
     // Capture the old assignment before Spoolman clears active_tray.
     const spool = await client.getSpool(spoolId);
     const oldTrayKey = parseExtraValue(spool.extra?.['active_tray']);
-    const updatedSpool = await client.unassignSpoolFromTray(spoolId);
-
-    let printerSync: BambuTrayClearResult | undefined;
-    if (oldTrayKey) {
-      try {
-        printerSync = await clearBambuTray(oldTrayKey);
-      } catch (error) {
-        printerSync = {
-          status: 'failed',
-          reason: error instanceof Error ? error.message : 'Unknown error',
-        };
-      }
-      console.log('[bambu-filament-sync] Unassign printer clear:', printerSync);
+    const job = oldTrayKey ? await createSyncIntent(oldTrayKey, spoolId, 'clear') : undefined;
+    let updatedSpool;
+    try { updatedSpool = await client.unassignSpoolFromTray(spoolId); }
+    catch {
+      if (job) await cancelSyncIntent(job, 'Spoolman unassignment failed');
+      throw new Error('Spoolman unassignment failed');
+    }
+    let printerSync;
+    if (job) {
+      try { printerSync = await activateSyncIntent(job); }
+      catch { printerSync = { status: 'pending', reason: 'Unassigned in Spoolman — synchronization will recover from saved intent' }; }
     }
 
     // Log activity
@@ -153,7 +168,7 @@ export async function DELETE(request: NextRequest) {
       type: 'spool_change',
       message: `Unassigned spool #${spoolId} from tray`,
       details: { spoolId, trayId: oldTrayKey || undefined, printerSync },
-    });
+    }).catch(() => console.warn('[printer-sync] Unassignment activity log unavailable'));
 
     return NextResponse.json({ spool: updatedSpool, printerSync });
   } catch (error) {

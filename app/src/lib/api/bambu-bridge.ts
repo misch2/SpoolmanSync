@@ -37,6 +37,21 @@ export interface BambuBridgeClearResult {
   trayId: number;
 }
 
+export interface BambuSlotState {
+  printerId: string;
+  ready: boolean;
+  amsId: number;
+  trayId: number;
+  present: boolean | null;
+  reading: boolean | null;
+  trayUuid: string | null;
+  gcodeState: string | null;
+  presentAgeMs: number;
+  readingAgeMs: number;
+  trayUuidAgeMs: number;
+  gcodeStateAgeMs: number;
+}
+
 interface BambuBridgeErrorResponse {
   status?: string;
   error?: string;
@@ -123,13 +138,19 @@ export class BambuBridgeClient {
       ) {
         throw new BambuBridgeError(
           `Bambu bridge request timed out after ${timeoutMs} ms`,
+          undefined,
+          { error: 'bridge_timeout' },
         );
       }
 
       throw new BambuBridgeError(
-        error instanceof Error
-          ? `Bambu bridge request failed: ${error.message}`
-          : 'Bambu bridge request failed',
+        'Bambu bridge request failed',
+        undefined,
+        { error: 'bridge_unavailable', diagnostics: {
+          transportErrorCode: error instanceof Error && error.cause && typeof error.cause === 'object' &&
+            'code' in error.cause && typeof error.cause.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.cause.code)
+            ? error.cause.code : 'UNKNOWN',
+        } },
       );
     } finally {
       clearTimeout(timeout);
@@ -234,6 +255,20 @@ export class BambuBridgeClient {
     }
 
     return result;
+  }
+
+  async getSlotState(amsId: number, trayId: number): Promise<BambuSlotState> {
+    const response = await this.fetchWithTimeout(`/api/v1/ams/${amsId}/trays/${trayId}/filament`, {}, 6000);
+    const body = await this.readJson<BambuSlotState & BambuBridgeErrorResponse>(response);
+    if (!response.ok) throw new BambuBridgeError('Bambu bridge slot state request failed', response.status, body);
+    if (typeof body.printerId !== 'string' || typeof body.ready !== 'boolean' ||
+        body.amsId !== amsId || body.trayId !== trayId ||
+        ![body.present, body.reading].every(v => v === null || typeof v === 'boolean') ||
+        ![body.trayUuid, body.gcodeState].every(v => v === null || typeof v === 'string') ||
+        ![body.presentAgeMs, body.readingAgeMs, body.trayUuidAgeMs, body.gcodeStateAgeMs].every(v => typeof v === 'number' && Number.isFinite(v))) {
+      throw new BambuBridgeError('Invalid slot state', response.status, { error: 'invalid_slot_state' });
+    }
+    return body;
   }
 
   async clearFilament(

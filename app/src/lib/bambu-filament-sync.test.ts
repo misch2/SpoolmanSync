@@ -7,6 +7,7 @@ import {
 } from 'vitest';
 
 import type { Spool } from './api/spoolman';
+import { BambuBridgeError } from './api/bambu-bridge';
 
 const {
   fromConnection,
@@ -32,7 +33,8 @@ vi.mock('@/lib/api/homeassistant', () => ({
   },
 }));
 
-vi.mock('@/lib/api/bambu-bridge', () => ({
+vi.mock('@/lib/api/bambu-bridge', async original => ({
+  ...await original<typeof import('@/lib/api/bambu-bridge')>(),
   BambuBridgeClient: {
     fromEnvironment:
       bridgeFromEnvironment,
@@ -590,6 +592,7 @@ describe(
 
         expect(result).toEqual({
           status: 'skipped',
+          error: 'unsupported_printer',
           reason:
             'Tray is not a discovered Bambu Lab tray',
         });
@@ -741,8 +744,10 @@ describe(
       async () => {
         bridgeSetFilament
           .mockRejectedValueOnce(
-            new Error(
+            new BambuBridgeError(
               'Bambu bridge: printer_not_ready',
+              503,
+              { error: 'printer_not_ready' },
             ),
           );
 
@@ -938,7 +943,7 @@ describe('clearBambuTray', () => {
     const printer = bambuPrinter();
     printer.brand = 'creality';
     discoverPrinters.mockResolvedValue([printer]);
-    expect(await clearBambuTray(key)).toEqual({ status: 'skipped', reason: 'Tray is not a discovered Bambu Lab tray' });
+    expect(await clearBambuTray(key)).toEqual(expect.objectContaining({ status: 'skipped', reason: 'Tray is not a discovered Bambu Lab tray' }));
     expect(bridgeClearFilament).not.toHaveBeenCalled();
     expect(bridgeGetHealth).not.toHaveBeenCalled();
   });
@@ -951,7 +956,7 @@ describe('clearBambuTray', () => {
 
   it('fails when bridge health is unavailable', async () => {
     bridgeGetHealth.mockRejectedValue(new Error('Connection refused'));
-    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', reason: 'Connection refused', entityId: TRAY_ENTITY, amsId: 0, trayId: 3 }));
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', error: 'sync_internal_error', entityId: TRAY_ENTITY, amsId: 0, trayId: 3 }));
     expect(bridgeClearFilament).not.toHaveBeenCalled();
   });
 
@@ -969,6 +974,6 @@ describe('clearBambuTray', () => {
 
   it('records a rejected clear request', async () => {
     bridgeClearFilament.mockRejectedValue(new Error('Clear verification failed'));
-    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', reason: 'Clear verification failed', amsId: 0, trayId: 3 }));
+    expect(await clearBambuTray(TRAY_ENTITY)).toEqual(expect.objectContaining({ status: 'failed', error: 'sync_internal_error', amsId: 0, trayId: 3 }));
   });
 });

@@ -1,105 +1,84 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-
-const mocks = vi.hoisted(() => ({
-  findFirst: vi.fn(), getSpool: vi.fn(), unassign: vi.fn(), assign: vi.fn(),
-  resolver: vi.fn(), locationSync: vi.fn(), clear: vi.fn(), sync: vi.fn(), log: vi.fn(),
-}));
-vi.mock('@/lib/db', () => ({ default: { spoolmanConnection: { findFirst: mocks.findFirst } } }));
-vi.mock('@/lib/api/spoolman', async importOriginal => {
-  const original = await importOriginal<typeof import('@/lib/api/spoolman')>();
-  return { ...original, SpoolmanClient: class {
-    getSpool = mocks.getSpool;
-    unassignSpoolFromTray = mocks.unassign;
-    assignSpoolToTray = mocks.assign;
-    setEntityIdResolver = mocks.resolver;
-  } };
-});
+const m = vi.hoisted(() => ({ findFirst: vi.fn(), getSpool: vi.fn(), unassign: vi.fn(), assign: vi.fn(),
+  create: vi.fn(), activate: vi.fn(), cancel: vi.fn(), prepare: vi.fn(), log: vi.fn() }));
+vi.mock('@/lib/db', () => ({ default: { spoolmanConnection: { findFirst: m.findFirst } } }));
+vi.mock('@/lib/api/spoolman', async original => ({ ...await original<typeof import('@/lib/api/spoolman')>(),
+  SpoolmanClient: class { getSpool = m.getSpool; unassignSpoolFromTray = m.unassign; assignSpoolToTray = m.assign; setEntityIdResolver = vi.fn(); } }));
 vi.mock('@/lib/api/homeassistant', () => ({ HomeAssistantClient: { fromConnection: vi.fn() } }));
-vi.mock('@/lib/spool-location', () => ({ applyLocationSync: mocks.locationSync }));
-vi.mock('@/lib/bambu-filament-sync', () => ({ clearBambuTray: mocks.clear, syncSpoolToBambuTray: mocks.sync }));
-vi.mock('@/lib/activity-log', () => ({ createActivityLog: mocks.log }));
-
+vi.mock('@/lib/spool-location', () => ({ applyLocationSync: vi.fn() }));
+vi.mock('@/lib/printer-sync', () => ({ createSyncIntent: m.create, activateSyncIntent: m.activate, cancelSyncIntent: m.cancel, prepareSpool: m.prepare }));
+vi.mock('@/lib/activity-log', () => ({ createActivityLog: m.log }));
 import { DELETE, POST } from './route';
-const oldTray = 'X2D_SERIAL_AMS_ID_tray_4';
-const diagnostics = { status: 'cleared', printer: 'X2D', entityId: 'sensor.tray_4', amsId: 0, trayId: 3, verified: true, elapsedMs: 1234, sequenceId: '20001' };
-const updated = { id: 123, extra: { active_tray: JSON.stringify('') } };
-function request(body: unknown, method = 'DELETE') {
-  return new NextRequest('http://localhost/api/spools', { method, body: JSON.stringify(body) });
-}
+const key = 'X2D_TEST_AMS_UNIT_tray_4';
+const job = { id: 'job', trayKey: key, state: 'committing' };
+const pending = { id: 'job', status: 'pending' };
+const spool = { id: 12, extra: { active_tray: JSON.stringify(key) } };
+const unassigned = { id: 12, extra: { active_tray: '""' } };
+function request(body: unknown, method = 'DELETE') { return new NextRequest('http://localhost/api/spools', { method, body: JSON.stringify(body) }); }
 beforeEach(() => {
-  vi.resetAllMocks();
-  mocks.findFirst.mockResolvedValue({ url: 'http://spoolman' });
-  mocks.getSpool.mockResolvedValue({ id: 123, extra: { active_tray: JSON.stringify(oldTray) } });
-  mocks.unassign.mockResolvedValue(updated);
-  mocks.clear.mockResolvedValue(diagnostics);
+  vi.resetAllMocks(); m.findFirst.mockResolvedValue({ url: 'http://inventory' }); m.getSpool.mockResolvedValue(spool);
+  m.unassign.mockResolvedValue(unassigned); m.assign.mockResolvedValue(spool);
+  m.create.mockResolvedValue(job); m.activate.mockResolvedValue(pending); m.cancel.mockResolvedValue({ status: 'cancelled' }); m.log.mockResolvedValue(undefined);
 });
-
-describe('explicit unassign', () => {
-  it('captures the old tray before unassign mutates it and clears only after success', async () => {
-    const spool = { id: 123, extra: { active_tray: JSON.stringify(oldTray) } };
+describe('durable assignment API', () => {
+  it('saves intent before assignment and activates afterward, without CLEAR', async () => {
     const order: string[] = [];
-    mocks.getSpool.mockImplementation(async () => { order.push('load'); return spool; });
-    mocks.unassign.mockImplementation(async () => { order.push('unassign'); spool.extra.active_tray = JSON.stringify(''); return spool; });
-    mocks.clear.mockImplementation(async () => { order.push('clear'); return diagnostics; });
-    const response = await DELETE(request({ spoolId: 123 }));
-    expect(response.status).toBe(200);
-    expect(order).toEqual(['load', 'unassign', 'clear']);
-    expect(mocks.clear).toHaveBeenCalledWith(oldTray);
-    expect(await response.json()).toEqual({ spool, printerSync: diagnostics });
-    expect(mocks.log).toHaveBeenCalledWith(expect.objectContaining({ details: { spoolId: 123, trayId: oldTray, printerSync: diagnostics } }));
+    m.create.mockImplementation(async () => { order.push('intent'); return job; });
+    m.assign.mockImplementation(async () => { order.push('assign'); return spool; });
+    m.activate.mockImplementation(async () => { order.push('activate'); return pending; });
+    const response = await POST(request({ spoolId: 12, trayId: key }, 'POST'));
+    expect(response.status).toBe(200); expect(order).toEqual(['intent', 'assign', 'activate']);
+    expect(m.create).toHaveBeenCalledWith(key, 12, 'set');
+    expect(await response.json()).toEqual({ spool, printerSync: pending });
   });
-
-  it('does not clear when Spoolman unassign fails', async () => {
-    mocks.unassign.mockRejectedValue(new Error('Spoolman down'));
-    expect((await DELETE(request({ spoolId: 123 }))).status).toBe(500);
-    expect(mocks.clear).not.toHaveBeenCalled();
-    expect(mocks.log).not.toHaveBeenCalled();
+  it('never changes inventory when intent persistence fails', async () => {
+    m.create.mockRejectedValue(new Error('database unavailable'));
+    expect((await POST(request({ spoolId: 12, trayId: key }, 'POST'))).status).toBe(500);
+    expect(m.assign).not.toHaveBeenCalled();
   });
-
-  it.each(['failed', 'skipped'])('returns HTTP success and logs a %s printer result', async status => {
-    const result = { ...diagnostics, status, verified: false, reason: 'Bridge unavailable' };
-    mocks.clear.mockResolvedValue(result);
-    const response = await DELETE(request({ spoolId: 123 }));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ spool: updated, printerSync: result });
-    expect(mocks.log).toHaveBeenCalledWith(expect.objectContaining({ details: { spoolId: 123, trayId: oldTray, printerSync: result } }));
+  it('cancels an intent if assignment fails', async () => {
+    m.assign.mockRejectedValue(new Error('inventory unavailable'));
+    expect((await POST(request({ spoolId: 12, trayId: key }, 'POST'))).status).toBe(500);
+    expect(m.cancel).toHaveBeenCalled(); expect(m.activate).not.toHaveBeenCalled();
   });
-
-  it('contains an unexpected clear exception without failing unassign', async () => {
-    mocks.clear.mockRejectedValue(new Error('Discovery unavailable'));
-    const response = await DELETE(request({ spoolId: 123 }));
-    expect(response.status).toBe(200);
-    const printerSync = { status: 'failed', reason: 'Discovery unavailable' };
-    expect(await response.json()).toEqual({ spool: updated, printerSync });
-    expect(mocks.log).toHaveBeenCalledWith(expect.objectContaining({ details: expect.objectContaining({ printerSync }) }));
+  it('keeps successful inventory commit successful if activation or activity logging fails', async () => {
+    m.activate.mockRejectedValue(new Error('database unavailable')); m.log.mockRejectedValue(new Error('log unavailable'));
+    const response = await POST(request({ spoolId: 12, trayId: key }, 'POST'));
+    expect(response.status).toBe(200); expect((await response.json()).printerSync.status).toBe('pending');
   });
-
-  it.each([undefined, JSON.stringify(''), ''])('does not clear an unassigned spool (%s)', async activeTray => {
-    mocks.getSpool.mockResolvedValue({ id: 123, extra: { active_tray: activeTray } });
-    const response = await DELETE(request({ spoolId: 123 }));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ spool: updated });
-    expect(mocks.unassign).toHaveBeenCalledWith(123);
-    expect(mocks.clear).not.toHaveBeenCalled();
-  });
-
-  it.each([{}, { spoolId: '123' }])('validates before loading or clearing', async body => {
-    expect((await DELETE(request(body))).status).toBe(400);
-    expect(mocks.getSpool).not.toHaveBeenCalled();
-    expect(mocks.unassign).not.toHaveBeenCalled();
-    expect(mocks.clear).not.toHaveBeenCalled();
+  it('prepares without setting the active spool', async () => {
+    m.prepare.mockResolvedValue({ status: 'waiting_insertion' });
+    const response = await POST(request({ spoolId: 12, trayId: key, prepare: true }, 'POST'));
+    expect(response.status).toBe(200); expect(m.prepare).toHaveBeenCalled(); expect(m.assign).not.toHaveBeenCalled();
   });
 });
-
-describe('assignment', () => {
-  it('continues setting metadata without issuing a redundant clear', async () => {
-    mocks.assign.mockResolvedValue(updated);
-    mocks.sync.mockResolvedValue({ status: 'synced' });
-    const response = await POST(request({ spoolId: 123, trayId: oldTray }, 'POST'));
-    expect(response.status).toBe(200);
-    expect(mocks.sync).toHaveBeenCalledWith(updated, oldTray);
-    expect(mocks.clear).not.toHaveBeenCalled();
-    expect(await response.json()).toEqual({ spool: updated, printerSync: { status: 'synced' } });
+describe('durable explicit unassign', () => {
+  it('captures old tray and activates CLEAR only after successful Spoolman unassign', async () => {
+    const order: string[] = [];
+    m.create.mockImplementation(async () => { order.push('intent'); return job; });
+    m.unassign.mockImplementation(async () => { order.push('unassign'); return unassigned; });
+    m.activate.mockImplementation(async () => { order.push('activate'); return pending; });
+    const response = await DELETE(request({ spoolId: 12 }));
+    expect(response.status).toBe(200); expect(order).toEqual(['intent', 'unassign', 'activate']);
+    expect(m.create).toHaveBeenCalledWith(key, 12, 'clear');
+    expect(await response.json()).toEqual({ spool: unassigned, printerSync: pending });
+  });
+  it('does not activate CLEAR if unassign failed', async () => {
+    m.unassign.mockRejectedValue(new Error('failed'));
+    expect((await DELETE(request({ spoolId: 12 }))).status).toBe(500);
+    expect(m.activate).not.toHaveBeenCalled(); expect(m.cancel).toHaveBeenCalled();
+  });
+  it.each([undefined, '""', ''])('does not queue CLEAR for unassigned spool (%s)', async active_tray => {
+    m.getSpool.mockResolvedValue({ id: 12, extra: { active_tray } });
+    expect((await DELETE(request({ spoolId: 12 }))).status).toBe(200); expect(m.create).not.toHaveBeenCalled();
+  });
+  it('preserves success when queue activation fails', async () => {
+    m.activate.mockRejectedValue(new Error('failed'));
+    const response = await DELETE(request({ spoolId: 12 }));
+    expect(response.status).toBe(200); expect((await response.json()).printerSync.status).toBe('pending');
+  });
+  it.each([{}, { spoolId: '12' }])('validates before mutation: %j', async body => {
+    expect((await DELETE(request(body))).status).toBe(400); expect(m.create).not.toHaveBeenCalled(); expect(m.unassign).not.toHaveBeenCalled();
   });
 });

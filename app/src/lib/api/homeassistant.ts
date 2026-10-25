@@ -574,6 +574,7 @@ export class HomeAssistantClient {
     // Note: HA requires client_id for refresh token requests (must match original OAuth client_id)
     const response = await fetch(`${this.baseUrl}/auth/token`, {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
@@ -632,6 +633,7 @@ export class HomeAssistantClient {
 
     const response = await fetch(`${this.baseUrl}/api${endpoint}`, {
       ...options,
+      signal: options.signal || AbortSignal.timeout(15000),
       headers,
     });
 

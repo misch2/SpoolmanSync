@@ -11,6 +11,7 @@ import {
   parseExtraValue,
   type Spool,
 } from '@/lib/api/spoolman';
+import { bridgeFailure } from '@/lib/bambu-diagnostics';
 
 interface BambuProfile {
   id: string;
@@ -33,6 +34,9 @@ interface ResolvedBambuProfile {
 export interface BambuFilamentSyncResult {
   status: 'synced' | 'skipped' | 'failed';
   reason?: string;
+  error?: string;
+  httpStatus?: number;
+  diagnostics?: Record<string, unknown>;
 
   printer?: string;
   entityId?: string;
@@ -53,6 +57,9 @@ export interface BambuFilamentSyncResult {
 export interface BambuTrayClearResult {
   status: 'cleared' | 'skipped' | 'failed';
   reason?: string;
+  error?: string;
+  httpStatus?: number;
+  diagnostics?: Record<string, unknown>;
   printer?: string;
   entityId?: string;
   amsId?: number;
@@ -74,7 +81,7 @@ interface BambuTrayTarget {
 
 type TrayResolution =
   | { target: BambuTrayTarget; amsId: number; trayId: number }
-  | { status: 'skipped' | 'failed'; reason: string; printer?: string; entityId?: string; amsId?: number; trayId?: number };
+  | { status: 'skipped' | 'failed'; reason: string; error?: string; printer?: string; entityId?: string; amsId?: number; trayId?: number };
 
 type FilamentWithSyncMetadata =
   Spool['filament'] & {
@@ -547,9 +554,10 @@ function toBambuAmsId(
     : amsNumber - 1;
 }
 
-async function resolveBambuTrayTarget(
+export async function resolveBambuTrayTarget(
   trayKey: string,
 ): Promise<TrayResolution> {
+  if (trayKey.startsWith('virtual_')) return { status: 'skipped', error: 'unsupported_printer', reason: 'Virtual slots do not require Bambu synchronization' };
   const ha =
     await HomeAssistantClient
       .fromConnection();
@@ -572,6 +580,8 @@ async function resolveBambuTrayTarget(
       printer.brand !==
       'bambu_lab'
     ) {
+      if ([...printer.ams_units.flatMap(ams => ams.trays), ...printer.external_spools].some(tray => trayMatches(tray, trayKey)))
+        return { status: 'skipped', error: 'unsupported_printer', reason: 'Tray is not a discovered Bambu Lab tray' };
       continue;
     }
 
@@ -804,6 +814,7 @@ async function checkBambuBridgeTarget(
   ) {
     return {
       status: 'failed',
+      error: 'printer_not_ready',
       reason:
         health.reconnecting
           ? 'Bambu bridge is reconnecting to the printer'
@@ -959,18 +970,11 @@ export async function syncSpoolToBambuTray(
         result.sequenceId,
     };
   } catch (error) {
-    const reason =
-      error instanceof Error
-        ? error.message
-        : 'Unknown Bambu bridge error';
-
-    console.warn(
-      `[bambu-filament-sync] ${target.printerName}: ${reason}`,
-    );
+    const failure = bridgeFailure(error);
 
     return {
       status: 'failed',
-      reason,
+      ...failure,
       printer:
         target.printerName,
       entityId:
@@ -1016,7 +1020,7 @@ export async function clearBambuTray(trayKey: string): Promise<BambuTrayClearRes
     return {
       ...diagnostics,
       status: 'failed',
-      reason: error instanceof Error ? error.message : 'Unknown Bambu bridge error',
+      ...bridgeFailure(error),
     };
   }
 }
