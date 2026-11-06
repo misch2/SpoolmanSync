@@ -107,6 +107,13 @@ describe('durable printer synchronization', () => {
     await createSyncIntent(key, 12, 'clear'); await runPrinterSyncOnce();
     expect(current().state).toBe('cleared'); expect(m.clear).toHaveBeenCalledWith(key);
   });
+  it('finishes an already-empty CLEAR as skipped without verification or retry', async () => {
+    m.getSpool.mockResolvedValue({ ...spool(), extra: { active_tray: '""' } }); m.getSpools.mockResolvedValue([]);
+    m.clear.mockResolvedValue({ status: 'skipped', reason: 'Printer slot already empty; no clear needed' });
+    await createSyncIntent(key, 12, 'clear'); await runPrinterSyncOnce(); await runPrinterSyncOnce();
+    expect(current().state).toBe('skipped'); expect(m.clear).toHaveBeenCalledOnce();
+    expect(JSON.parse(current().result).verified).not.toBe(true);
+  });
   it('recovers an interrupted SET without repeating the inventory mutation', async () => {
     const job = await createSyncIntent(key, 12, 'set'); m.jobs.set(key, { ...job, state: 'syncing' });
     await runPrinterSyncOnce(); expect(current().state).toBe('synced'); expect(m.assign).not.toHaveBeenCalled();

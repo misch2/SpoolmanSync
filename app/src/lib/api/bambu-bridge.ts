@@ -50,6 +50,9 @@ export interface BambuSlotState {
   readingAgeMs: number;
   trayUuidAgeMs: number;
   gcodeStateAgeMs: number;
+  // Optional for compatibility with bridges predating metadata observations.
+  metadataCleared?: boolean | null;
+  metadataClearedAgeMs?: number;
 }
 
 interface BambuBridgeErrorResponse {
@@ -267,6 +270,12 @@ export class BambuBridgeClient {
         ![body.trayUuid, body.gcodeState].every(v => v === null || typeof v === 'string') ||
         ![body.presentAgeMs, body.readingAgeMs, body.trayUuidAgeMs, body.gcodeStateAgeMs].every(v => typeof v === 'number' && Number.isFinite(v))) {
       throw new BambuBridgeError('Invalid slot state', response.status, { error: 'invalid_slot_state' });
+    }
+    if ((body.metadataCleared !== undefined || body.metadataClearedAgeMs !== undefined) &&
+        (!(body.metadataCleared === null || typeof body.metadataCleared === 'boolean') ||
+         typeof body.metadataClearedAgeMs !== 'number' ||
+         !Number.isInteger(body.metadataClearedAgeMs) || body.metadataClearedAgeMs < -1)) {
+      throw new BambuBridgeError('Invalid metadata state', response.status, { error: 'invalid_slot_state' });
     }
     return body;
   }

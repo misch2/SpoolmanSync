@@ -188,7 +188,8 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
 
   const externalLabel = tray.slot_name?.trim() || 'External';
   const trayLabel = tray.is_external ? externalLabel : `Tray ${tray.tray_number}`;
-  const visibleSync = sync && sync.status !== 'cancelled' && sync.status !== 'skipped' ? sync : undefined;
+  const visibleSync = sync && sync.status !== 'cancelled' &&
+    (sync.status !== 'skipped' || sync.operation === 'clear') ? sync : undefined;
 
   // Check if any enabled filters have values to show
   const hasFilterOptions = enabledFields.some(f => f.values.length > 0);

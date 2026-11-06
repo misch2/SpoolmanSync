@@ -160,7 +160,7 @@ async function unassign(request: NextRequest) {
     let printerSync;
     if (job) {
       try { printerSync = await activateSyncIntent(job); }
-      catch { printerSync = { status: 'pending', reason: 'Unassigned in Spoolman — synchronization will recover from saved intent' }; }
+      catch { printerSync = { status: 'pending', operation: 'clear', reason: 'Unassigned in Spoolman — synchronization will recover from saved intent' }; }
     }
 
     // Log activity

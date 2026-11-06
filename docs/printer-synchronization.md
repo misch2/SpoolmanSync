@@ -60,6 +60,16 @@ assignment. Its CLEAR is activated afterward and cancelled if that slot becomes
 occupied by a newer assignment. Replacement assignment never issues redundant
 CLEAR. Retry/cancel actions require the current job ID, rejecting superseded IDs.
 
+Before CLEAR on a regular AMS slot, SpoolmanSync reads bridge slot state. If the
+printer identity matches, the bridge is ready, and independent presence and
+`metadataCleared` observations no older than six seconds confirm an empty slot
+with cleared metadata, the job finishes as `skipped` with "Printer slot already
+empty; no clear needed". This is an observed no-op, not a verified write. Missing,
+stale or unknown observations (including older bridges without these fields or
+GET support) retain the existing CLEAR path. External/HT slots retain CLEAR
+because their presence signal is not qualified. An explicit CLEAR rejection is
+still reported, separately from the completed Spoolman removal.
+
 ## API and diagnostics
 
 `POST /api/spools` retains `{ spoolId, trayId }`, with optional `prepare: true`.
