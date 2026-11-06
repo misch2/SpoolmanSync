@@ -17,6 +17,7 @@ const {
   bridgeGetHealth,
   bridgeSetFilament,
   bridgeClearFilament,
+  bridgeGetSlotState,
 } = vi.hoisted(() => ({
   fromConnection: vi.fn(),
   discoverPrinters: vi.fn(),
@@ -25,6 +26,7 @@ const {
   bridgeGetHealth: vi.fn(),
   bridgeSetFilament: vi.fn(),
   bridgeClearFilament: vi.fn(),
+  bridgeGetSlotState: vi.fn(),
 }));
 
 vi.mock('@/lib/api/homeassistant', () => ({
@@ -188,6 +190,9 @@ beforeEach(() => {
   bridgeSetFilament.mockReset();
   bridgeClearFilament.mockReset();
   bridgeClearFilament.mockResolvedValue({ status: 'cleared', verified: true, elapsedMs: 1234, sequenceId: '20001' });
+  bridgeGetSlotState.mockReset();
+  bridgeGetSlotState.mockResolvedValue({ printerId: PRINTER_ID, ready: true, amsId: 0, trayId: 3,
+    present: false, presentAgeMs: 0, metadataCleared: null, metadataClearedAgeMs: -1 });
 
   fromConnection.mockResolvedValue({
     discoverPrinters,
@@ -203,6 +208,7 @@ beforeEach(() => {
     setFilament:
       bridgeSetFilament,
     clearFilament: bridgeClearFilament,
+    getSlotState: bridgeGetSlotState,
   });
 
   bridgeGetHealth.mockResolvedValue({
@@ -886,6 +892,44 @@ describe(
   },
 );
 describe('clearBambuTray', () => {
+  it('skips a freshly observed empty slot with cleared metadata without claiming a verified write', async () => {
+    bridgeGetSlotState.mockResolvedValue({ printerId: PRINTER_ID, ready: true,
+      present: false, presentAgeMs: 0, metadataCleared: true, metadataClearedAgeMs: 0 });
+    const result = await clearBambuTray(TRAY_ENTITY);
+    expect(result).toMatchObject({ status: 'skipped', reason: 'Printer slot already empty; no clear needed' });
+    expect(result.verified).not.toBe(true);
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { present: true }, { present: null }, { presentAgeMs: -1 }, { presentAgeMs: 6001 },
+    { metadataCleared: false }, { metadataCleared: null }, { metadataCleared: undefined },
+    { metadataClearedAgeMs: -1 }, { metadataClearedAgeMs: 6001 },
+    { metadataClearedAgeMs: undefined }, { ready: false },
+  ])('retains CLEAR when the no-op cannot be established: %j', async extra => {
+    bridgeGetSlotState.mockResolvedValue({ printerId: PRINTER_ID, ready: true,
+      present: false, presentAgeMs: 0, metadataCleared: true, metadataClearedAgeMs: 0, ...extra });
+    expect(await clearBambuTray(TRAY_ENTITY)).toMatchObject({ status: 'cleared', verified: true });
+    expect(bridgeClearFilament).toHaveBeenCalledWith(0, 3);
+  });
+
+  it.each([404, 405, 504])('retains CLEAR when the observation endpoint returns HTTP %i', async httpStatus => {
+    bridgeGetSlotState.mockRejectedValue(new BambuBridgeError('Unavailable observation', httpStatus));
+    expect(await clearBambuTray(TRAY_ENTITY)).toMatchObject({ status: 'cleared', verified: true });
+  });
+
+  it('does not hide an explicit CLEAR rejection after an unknown observation', async () => {
+    bridgeClearFilament.mockRejectedValue(new BambuBridgeError('Rejected', 502, { error: 'printer_rejected' }));
+    expect(await clearBambuTray(TRAY_ENTITY)).toMatchObject({ status: 'failed', error: 'printer_rejected' });
+  });
+
+  it('does not write when slot state belongs to another printer', async () => {
+    bridgeGetSlotState.mockResolvedValue({ printerId: 'OTHER', ready: true,
+      present: false, presentAgeMs: 0, metadataCleared: true, metadataClearedAgeMs: 0 });
+    expect(await clearBambuTray(TRAY_ENTITY)).toMatchObject({ status: 'failed', error: 'printer_identity_mismatch' });
+    expect(bridgeClearFilament).not.toHaveBeenCalled();
+  });
+
   it.each([
     [TRAY_UNIQUE_ID, 0, 3],
     [TRAY_ENTITY, 0, 3],
@@ -911,6 +955,7 @@ describe('clearBambuTray', () => {
     discoverPrinters.mockResolvedValue([printer]);
     await clearBambuTray(TRAY_ENTITY);
     expect(bridgeClearFilament).toHaveBeenCalledWith(128, 3);
+    expect(bridgeGetSlotState).not.toHaveBeenCalled();
   });
 
   it('uses 255 for a single external holder', async () => {
@@ -919,6 +964,7 @@ describe('clearBambuTray', () => {
     discoverPrinters.mockResolvedValue([printer]);
     await clearBambuTray(EXTERNAL_LEFT_ENTITY);
     expect(bridgeClearFilament).toHaveBeenCalledWith(255, 0);
+    expect(bridgeGetSlotState).not.toHaveBeenCalled();
   });
 
   it('fails an indeterminate dual external mapping regardless of slot name', async () => {

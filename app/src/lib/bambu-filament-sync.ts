@@ -5,6 +5,7 @@ import {
 
 import {
   BambuBridgeClient,
+  BambuBridgeError,
 } from '@/lib/api/bambu-bridge';
 
 import {
@@ -1007,6 +1008,28 @@ export async function clearBambuTray(trayKey: string): Promise<BambuTrayClearRes
     }
     const bridgeState = await checkBambuBridgeTarget(bridge, target, amsId, trayId);
     if (bridgeState) return { ...diagnostics, ...bridgeState };
+
+    // An observation is a no-op decision, never a verified printer write.
+    // External/HT slots have no qualified presence signal in this bridge.
+    if (!target.external && amsId >= 0 && amsId <= 3) {
+      try {
+        const state = await bridge.getSlotState(amsId, trayId);
+        if (state.printerId.toUpperCase() !== target.printerId.toUpperCase()) {
+          return { ...diagnostics, status: 'failed', error: 'printer_identity_mismatch',
+            reason: 'Bambu bridge slot state belongs to a different printer' };
+        }
+        const fresh = (age: number | undefined) => age !== undefined && age >= 0 && age <= 6000;
+        if (state.ready && state.present === false && fresh(state.presentAgeMs) &&
+            state.metadataCleared === true && fresh(state.metadataClearedAgeMs)) {
+          return { ...diagnostics, status: 'skipped',
+            reason: 'Printer slot already empty; no clear needed' };
+        }
+      } catch (error) {
+        // Older bridges may not implement GET. Failed/unknown observations
+        // cannot establish a no-op; retain the existing verified CLEAR path.
+        if (!(error instanceof BambuBridgeError)) throw error;
+      }
+    }
 
     const result = await bridge.clearFilament(amsId, trayId);
     return {

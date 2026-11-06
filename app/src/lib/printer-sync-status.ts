@@ -12,6 +12,19 @@ export interface PrinterSyncStatus {
 }
 
 export function printerSyncMessage(sync?: Partial<PrinterSyncStatus>): string {
+  if (sync?.operation === 'clear') {
+    switch (sync.status) {
+      case 'pending': return 'Removed from Spoolman — waiting to clear printer';
+      case 'syncing': return 'Removed from Spoolman — clearing printer metadata';
+      case 'cleared': return 'Removed from Spoolman — cleared and verified on printer';
+      case 'failed': case 'expired':
+        return sync.error === 'printer_rejected'
+          ? 'Removed from Spoolman — printer rejected metadata clear'
+          : `Removed from Spoolman — ${sync.reason || 'printer metadata clear failed'}`;
+      case 'skipped': return `Removed from Spoolman — ${sync.reason || 'printer clear skipped'}`;
+      case 'cancelled': return `Removed from Spoolman — ${sync.reason || 'printer clear cancelled'}`;
+    }
+  }
   switch (sync?.status) {
     case 'synced': return 'Verified on printer';
     case 'cleared': return 'Cleared and verified on printer';

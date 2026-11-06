@@ -285,7 +285,7 @@ export default function Dashboard() {
       }
 
       const data = await res.json();
-      toast.info(data.printerSync ? 'Unassigned in Spoolman — printer clear pending' : 'Spool unassigned');
+      toast.info(data.printerSync ? printerSyncMessage(data.printerSync) : 'Spool unassigned');
       await fetchData(); // Refresh data - await to ensure UI updates
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to unassign spool');

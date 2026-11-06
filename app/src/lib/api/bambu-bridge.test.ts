@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BambuBridgeClient, BambuBridgeError } from './bambu-bridge';
+import { BambuBridgeClient } from './bambu-bridge';
 
 const cleared = { status: 'cleared', verified: true, elapsedMs: 1234, sequenceId: '20001', amsId: 0, trayId: 3 };
 const fetchMock = vi.fn();
@@ -8,6 +8,33 @@ const client = new BambuBridgeClient('http://bridge:8000/', ' secret ');
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
+});
+
+describe('BambuBridgeClient.getSlotState metadata observations', () => {
+  const state = { printerId: 'TEST', ready: true, amsId: 0, trayId: 3,
+    present: false, reading: false, trayUuid: '', gcodeState: 'IDLE',
+    presentAgeMs: 0, readingAgeMs: 0, trayUuidAgeMs: 0, gcodeStateAgeMs: 0 };
+
+  it.each([true, false, null])('accepts metadataCleared=%s with its observation age', async metadataCleared => {
+    const body = { ...state, metadataCleared, metadataClearedAgeMs: 10 };
+    fetchMock.mockResolvedValue(Response.json(body));
+    expect(await client.getSlotState(0, 3)).toEqual(body);
+  });
+
+  it('accepts older responses without metadata observations', async () => {
+    fetchMock.mockResolvedValue(Response.json(state));
+    expect(await client.getSlotState(0, 3)).toEqual(state);
+  });
+
+  it.each([
+    { metadataCleared: true }, { metadataClearedAgeMs: 0 },
+    { metadataCleared: 'true', metadataClearedAgeMs: 0 },
+    { metadataCleared: true, metadataClearedAgeMs: -2 },
+    { metadataCleared: true, metadataClearedAgeMs: 0.5 },
+  ])('rejects malformed metadata observations: %j', async extra => {
+    fetchMock.mockResolvedValue(Response.json({ ...state, ...extra }));
+    await expect(client.getSlotState(0, 3)).rejects.toMatchObject({ response: { error: 'invalid_slot_state' } });
+  });
 });
 afterEach(() => {
   vi.unstubAllGlobals();
