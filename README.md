@@ -1,5 +1,10 @@
 # SpoolmanSync
 
+For Bambu metadata writes, assignments now keep a persistent pending printer
+update and retry short outages. The dashboard and QR/NFC flow distinguish
+inventory assignment from printer verification. See the
+[quick start for retries and preparing a spool before insertion](docs/printer-synchronization.md).
+
 **Automatic filament tracking for Bambu Lab and Creality printers with Spoolman**
 
 ![Build Status](https://github.com/gibz104/SpoolmanSync/actions/workflows/docker-publish.yml/badge.svg)

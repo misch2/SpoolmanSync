@@ -20,12 +20,14 @@ import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { Spool } from '@/lib/api/spoolman';
 import { isKioskMode, disableKioskMode } from '@/lib/kiosk';
 import Link from 'next/link';
+import { printerSyncMessage } from '@/lib/printer-sync-status';
 
 interface TrayOption {
   id: string;
   label: string;
   printer: string;
   amsName?: string;
+  canPrepare?: boolean;
 }
 
 export default function SpoolAssignPage({
@@ -39,6 +41,8 @@ export default function SpoolAssignPage({
   const [trays, setTrays] = useState<TrayOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [assigning, setAssigning] = useState(false);
+  const [prepare, setPrepare] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
   const [pendingTrayId, setPendingTrayId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [kioskMode, setKioskMode] = useState(false);
@@ -118,6 +122,7 @@ export default function SpoolAssignPage({
                 label: `Tray ${tray.tray_number}`,
                 printer: printer.name,
                 amsName: ams.name,
+                canPrepare: printer.brand === 'bambu_lab' && ams.ams_number >= 1 && ams.ams_number <= 4,
               });
             }
           }
@@ -150,6 +155,10 @@ export default function SpoolAssignPage({
 
   const handleAssign = async (tray: TrayOption) => {
     if (!spool) return;
+    if (prepare && !tray.canPrepare) {
+      toast.error('Preparation is available only for regular Bambu AMS slots');
+      return;
+    }
 
     setAssigning(true);
     setPendingTrayId(tray.id);
@@ -157,17 +166,19 @@ export default function SpoolAssignPage({
       const res = await fetch('/api/spools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spoolId: spool.id, trayId: tray.id }),
+        body: JSON.stringify({ spoolId: spool.id, trayId: tray.id, prepare: prepare && !!tray.canPrepare }),
       });
 
       if (!res.ok) throw new Error('Failed to assign spool');
+      const message = printerSyncMessage((await res.json()).printerSync);
+      setSyncMessage(message);
 
       if (kioskMode) {
         const trayLabel = tray.amsName ? `${tray.amsName} — ${tray.label}` : tray.label;
         setKioskSuccess(trayLabel);
         setTimeout(() => router.push('/kiosk'), 1500);
       } else {
-        toast.success('Spool assigned successfully!');
+        toast.info(message);
         router.push('/');
       }
     } catch (err) {
@@ -187,6 +198,7 @@ export default function SpoolAssignPage({
         </h1>
         <p className="text-[clamp(0.75rem,3vw,1rem)] text-muted-foreground text-center mt-[clamp(0.25rem,1vw,0.5rem)]">
           {spool?.filament.name || spool?.filament.material} &rarr; {kioskSuccess}
+          <span className="block text-sm mt-2">{syncMessage}</span>
         </p>
       </div>
     );
@@ -381,6 +393,12 @@ export default function SpoolAssignPage({
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
+                  {trays.some(tray => tray.canPrepare) && (
+                    <label className="flex items-center gap-2 text-sm mb-3">
+                      <input type="checkbox" checked={prepare} onChange={e => setPrepare(e.target.checked)} />
+                      Prepare now; assign after insertion (regular Bambu AMS slots)
+                    </label>
+                  )}
                   <Command className="rounded-lg border">
                     <CommandInput placeholder="Search trays..." />
                     <CommandList className="max-h-[300px]">

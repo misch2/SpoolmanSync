@@ -9,6 +9,8 @@ import { getWebhookSecret, isWebhookAuthEnabled, tokensMatch, WEBHOOK_TOKEN_HEAD
 import { isValidTrayUuid, lengthToWeight, classifyTrayState, isActivePrintState } from '@/lib/webhook-helpers';
 import { trayCarriesSpoolSerial } from '@/lib/creality';
 import { applyLocationSync } from '@/lib/spool-location';
+import { withAssignmentLock } from '@/lib/assignment-lock';
+import { syncStatus } from '@/lib/printer-sync';
 
 /**
  * Webhook endpoint for Home Assistant automations
@@ -27,6 +29,9 @@ import { applyLocationSync } from '@/lib/spool-location';
  */
 
 export async function POST(request: NextRequest) {
+  return withAssignmentLock(() => handleWebhook(request));
+}
+async function handleWebhook(request: NextRequest) {
   try {
     // Webhook authentication: only enforce once token-carrying automations have
     // actually been applied (see isWebhookAuthEnabled). This prevents previewing
@@ -245,6 +250,13 @@ export async function POST(request: NextRequest) {
 
       // Resolve entity_id to unique_id for matching and assignment
       const trayUniqueId = await resolveToUniqueId(tray_entity_id);
+
+      // A preparation owns only a future assignment. Empty reports and RFID
+      // auto-match must not erase it or replace current inventory underneath it.
+      const prepared = await prisma.printerSyncJob.findUnique({ where: { trayKey: trayUniqueId } });
+      if (prepared?.operation === 'prepare' && prepared.state === 'waiting_insertion' && prepared.expiresAt > new Date()) {
+        return NextResponse.json({ status: 'pending', printerSync: syncStatus(prepared) });
+      }
 
       // Classify the reported tray state (issue #65) — see classifyTrayState.
       const trayState = classifyTrayState(name);

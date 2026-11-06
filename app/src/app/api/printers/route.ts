@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { SpoolmanClient } from '@/lib/api/spoolman';
-import { getHiddenPrinters } from '@/app/api/printers/setup/route';
+import { loadHiddenPrinterRecords as getHiddenPrinters } from '@/lib/hidden-printer-settings';
 import { getVirtualPrinters, virtualPrintersToHAPrinters, migrateVirtualKeys, withVirtualLock } from '@/lib/virtual-printers';
 import { detectTrayMismatch } from '@/lib/tray-mismatch';
 import { reconcileSpoolLocations } from '@/lib/spool-location';

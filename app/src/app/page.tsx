@@ -11,6 +11,7 @@ import type { HAPrinter } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
 import type { ActiveAlert } from '@/lib/alerts';
 import Link from 'next/link';
+import { printerSyncMessage, type PrinterSyncStatus } from '@/lib/printer-sync-status';
 
 interface PrinterWithSpools extends HAPrinter {
   ams_units: Array<{
@@ -44,6 +45,7 @@ interface Settings {
 }
 
 export default function Dashboard() {
+  const [syncJobs, setSyncJobs] = useState<PrinterSyncStatus[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [printers, setPrinters] = useState<PrinterWithSpools[]>([]);
   const [spools, setSpools] = useState<Spool[]>([]);
@@ -94,11 +96,13 @@ export default function Dashboard() {
 
       // Only fetch printers and spools if both services are configured
       if (settingsData.homeassistant && settingsData.spoolman) {
-        const [printersRes, spoolsRes, alertsRes] = await Promise.all([
+        const [printersRes, spoolsRes, alertsRes, syncRes] = await Promise.all([
           fetch('/api/printers'),
           fetch('/api/spools'),
           fetch('/api/alerts'),
+          fetch('/api/printer-sync'),
         ]);
+        if (syncRes.ok) setSyncJobs((await syncRes.json()).jobs || []);
 
         if (printersRes.ok) {
           const printersData = await printersRes.json();
@@ -125,6 +129,31 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Instrumentation and route bundles need not share an SSE emitter. Poll the
+  // durable state as well, refreshing inventory when a preparation activates.
+  useEffect(() => {
+    let stopped = false;
+    let busy = false;
+    let fingerprint = '';
+    const poll = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const response = await fetch('/api/printer-sync');
+        if (!response.ok || stopped) return;
+        const jobs = (await response.json()).jobs || [];
+        if (stopped) return;
+        const next = JSON.stringify(jobs);
+        setSyncJobs(jobs);
+        if (fingerprint && fingerprint !== next) await fetchData();
+        fingerprint = next;
+      } catch { /* Keep the last known state during a short network outage. */ }
+      finally { busy = false; }
+    };
+    const timer = setInterval(poll, 3000);
+    return () => { stopped = true; clearInterval(timer); };
   }, [fetchData]);
 
   // Real-time updates: try SSE first, fall back to polling if SSE doesn't work
@@ -223,19 +252,20 @@ export default function Dashboard() {
     };
   }, [settings?.homeassistant, settings?.spoolman, fetchData]);
 
-  const handleSpoolAssign = async (trayId: string, spoolId: number) => {
+  const handleSpoolAssign = async (trayId: string, spoolId: number, prepare = false) => {
     try {
       const res = await fetch('/api/spools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trayId, spoolId }),
+        body: JSON.stringify({ trayId, spoolId, prepare }),
       });
 
       if (!res.ok) {
         throw new Error('Failed to assign spool');
       }
 
-      toast.success('Spool assigned successfully');
+      const data = await res.json();
+      toast.info(printerSyncMessage(data.printerSync));
       fetchData(); // Refresh data
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to assign spool');
@@ -254,11 +284,20 @@ export default function Dashboard() {
         throw new Error('Failed to unassign spool');
       }
 
-      toast.success('Spool unassigned');
+      const data = await res.json();
+      toast.info(data.printerSync ? 'Unassigned in Spoolman — printer clear pending' : 'Spool unassigned');
       await fetchData(); // Refresh data - await to ensure UI updates
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to unassign spool');
     }
+  };
+
+  const handleSyncAction = async (id: string, action: 'retry' | 'cancel') => {
+    try {
+      const res = await fetch('/api/printer-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action }) });
+      if (!res.ok) throw new Error('Request changed — refresh and try again');
+      await fetchData();
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Could not update synchronization'); }
   };
 
   if (loading) {
@@ -477,6 +516,8 @@ export default function Dashboard() {
                 printer={printer as Parameters<typeof PrinterCard>[0]['printer']}
                 spools={spools}
                 onSpoolAssign={handleSpoolAssign}
+                syncJobs={syncJobs}
+                onSyncAction={handleSyncAction}
                 onSpoolUnassign={handleSpoolUnassign}
                 showSpoolLocation={settings?.showSpoolLocation}
               />

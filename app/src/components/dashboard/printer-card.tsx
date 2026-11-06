@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { TraySlot } from './tray-slot';
 import type { HATray } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
+import type { PrinterSyncStatus } from '@/lib/printer-sync-status';
 
 interface MismatchInfo {
   type: 'material' | 'color' | 'both';
@@ -26,10 +27,12 @@ interface TrayWithSpool extends HATray {
 interface AMSWithSpools {
   entity_id: string;
   name: string;
+  ams_number?: number;
   trays: TrayWithSpool[];
 }
 
 interface PrinterWithSpools {
+  brand?: string;
   entity_id: string;
   name: string;
   state: string;
@@ -40,12 +43,14 @@ interface PrinterWithSpools {
 interface PrinterCardProps {
   printer: PrinterWithSpools;
   spools: Spool[];
-  onSpoolAssign: (trayId: string, spoolId: number) => void;
+  onSpoolAssign: (trayId: string, spoolId: number, prepare?: boolean) => void;
   onSpoolUnassign: (spoolId: number) => void;
   showSpoolLocation?: boolean;
+  syncJobs?: PrinterSyncStatus[];
+  onSyncAction?: (id: string, action: 'retry' | 'cancel') => void;
 }
 
-export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, showSpoolLocation }: PrinterCardProps) {
+export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, showSpoolLocation, syncJobs, onSyncAction }: PrinterCardProps) {
   return (
     <Card className="w-full">
       <CardHeader className="pb-3">
@@ -67,7 +72,10 @@ export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, s
                   tray={tray}
                   assignedSpool={tray.assigned_spool}
                   spools={spools}
-                  onAssign={(spoolId) => onSpoolAssign(tray.unique_id || tray.entity_id, spoolId)}
+                  onAssign={(spoolId, prepare) => onSpoolAssign(tray.unique_id || tray.entity_id, spoolId, prepare)}
+                  canPrepare={printer.brand === 'bambu_lab' && (ams.ams_number || 0) >= 1 && (ams.ams_number || 0) <= 4}
+                  sync={syncJobs?.find(job => job.trayKey === (tray.unique_id || tray.entity_id))}
+                  onSyncAction={onSyncAction}
                   onUnassign={onSpoolUnassign}
                   mismatch={tray.mismatch}
                   showLocation={showSpoolLocation}
@@ -95,6 +103,8 @@ export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, s
                   }}
                   onUnassign={onSpoolUnassign}
                   showLocation={showSpoolLocation}
+                  sync={syncJobs?.find(job => job.trayKey === (extSpool.unique_id || extSpool.entity_id))}
+                  onSyncAction={onSyncAction}
                 />
               ))}
             </div>

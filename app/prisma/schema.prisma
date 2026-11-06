@@ -57,3 +57,23 @@ model ActivityLog {
   details   String?  // JSON string for additional data
   createdAt DateTime @default(now())
 }
+
+// One current intent per physical tray. Replacing it changes id, invalidating
+// stale worker completions. The released container runs one server process.
+model PrinterSyncJob {
+  trayKey        String   @id
+  id             String   @unique @default(cuid())
+  spoolId        Int
+  operation      String
+  state          String
+  attempts       Int      @default(0)
+  nextAttemptAt  DateTime @default(now())
+  expiresAt      DateTime
+  sawEmpty       Boolean  @default(false)
+  presentSince   DateTime?
+  presentTag     String?
+  baseline       String   @default("{}")
+  result         String   @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}

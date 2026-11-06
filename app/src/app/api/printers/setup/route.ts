@@ -1,29 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import prisma from '@/lib/db';
+import { loadHiddenPrinterRecords as getHiddenPrinters } from '@/lib/hidden-printer-settings';
 
 const SUPPORTED_DOMAINS = ['bambu_lab', 'ha_creality_ws'] as const;
 type PrinterDomain = typeof SUPPORTED_DOMAINS[number];
 const HIDDEN_PRINTERS_KEY = 'hidden_printers';
-
-/**
- * Get the list of hidden printer entries (entry_id + title) that
- * the user has removed from SpoolmanSync.
- */
-export async function getHiddenPrinters(): Promise<{ entryId: string; title: string }[]> {
-  const setting = await prisma.settings.findUnique({ where: { key: HIDDEN_PRINTERS_KEY } });
-  if (!setting) return [];
-  try {
-    const parsed = JSON.parse(setting.value);
-    // Support both old format (string[]) and new format ({entryId, title}[])
-    if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'string') {
-      return parsed.map((id: string) => ({ entryId: id, title: '' }));
-    }
-    return parsed;
-  } catch {
-    return [];
-  }
-}
 
 async function saveHiddenPrinters(hidden: { entryId: string; title: string }[]): Promise<void> {
   await prisma.settings.upsert({

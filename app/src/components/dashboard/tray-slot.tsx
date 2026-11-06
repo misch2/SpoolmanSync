@@ -31,6 +31,7 @@ import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { HATray } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
 import { buildSpoolSearchValue, parseExtraValue } from '@/lib/api/spoolman';
+import { printerSyncMessage, type PrinterSyncStatus } from '@/lib/printer-sync-status';
 
 type SortBy = 'id' | 'name' | 'material' | 'vendor';
 
@@ -58,10 +59,13 @@ interface TraySlotProps {
   tray: HATray;
   assignedSpool?: Spool;
   spools: Spool[];
-  onAssign: (spoolId: number) => void;
+  onAssign: (spoolId: number, prepare?: boolean) => void;
   onUnassign?: (spoolId: number) => void;
   mismatch?: MismatchInfo;
   showLocation?: boolean;
+  canPrepare?: boolean;
+  sync?: PrinterSyncStatus;
+  onSyncAction?: (id: string, action: 'retry' | 'cancel') => void;
 }
 
 /**
@@ -102,8 +106,9 @@ function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   });
 }
 
-export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation }: TraySlotProps) {
+export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation, canPrepare, sync, onSyncAction }: TraySlotProps) {
   const [open, setOpen] = useState(false);
+  const [prepare, setPrepare] = useState(false);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const [enabledFields, setEnabledFields] = useState<FilterField[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>('id');
@@ -183,16 +188,17 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
 
   const externalLabel = tray.slot_name?.trim() || 'External';
   const trayLabel = tray.is_external ? externalLabel : `Tray ${tray.tray_number}`;
+  const visibleSync = sync && sync.status !== 'cancelled' && sync.status !== 'skipped' ? sync : undefined;
 
   // Check if any enabled filters have values to show
   const hasFilterOptions = enabledFields.some(f => f.values.length > 0);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <div className="relative">
+      <div className="relative flex h-full min-w-0 flex-col rounded-lg border-2 border-border transition-colors hover:border-primary hover:bg-accent min-h-[120px] md:min-h-[140px]">
       <DialogTrigger asChild>
         <button
-          className="relative flex w-full flex-col rounded-lg border-2 border-border p-3 transition-colors hover:border-primary hover:bg-accent text-left min-h-[120px] md:min-h-[140px]"
+          className="relative flex w-full flex-1 flex-col rounded-md p-3 text-left"
         >
           {/* Header row with tray label (unassign control is an overlay sibling) */}
           <div className="flex items-center justify-between w-full mb-2">
@@ -241,18 +247,6 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
                   </div>
                 )}
               </div>
-
-              {/* Footer: spool ID and weight */}
-              <div className="flex items-center justify-between mt-auto pt-1">
-                <span className="text-[10px] text-muted-foreground">
-                  #{assignedSpool.id}
-                </span>
-                {showWeight && (
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
-                    {Math.round(displayWeight)}g<span className="hidden min-[320px]:inline"> Remaining</span>
-                  </Badge>
-                )}
-              </div>
             </>
           ) : (
             /* Empty tray state */
@@ -270,6 +264,37 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
           )}
         </button>
       </DialogTrigger>
+      {/* Keep sync information and actions inside the card, outside its dialog trigger. */}
+      {(assignedSpool || visibleSync) && (
+        <div className="flex flex-wrap items-start justify-between gap-2 px-3 pb-3 pt-1">
+          <div className="min-w-0 flex-1 basis-24 space-y-1 text-[10px] text-muted-foreground">
+            {assignedSpool && assignedSpool.id !== visibleSync?.spoolId && (
+              <p>#{assignedSpool.id}</p>
+            )}
+            {visibleSync && (
+              <>
+                <p
+                  role="status"
+                  className={`[overflow-wrap:anywhere] ${['failed', 'expired'].includes(visibleSync.status) ? 'text-red-600 dark:text-red-400' : ''}`}
+                >
+                  #{visibleSync.spoolId}: {printerSyncMessage(visibleSync)}
+                </p>
+                {['failed', 'expired'].includes(visibleSync.status) && onSyncAction && (
+                  <Button size="sm" variant="outline" className="h-auto min-h-8 max-w-full whitespace-normal px-2" onClick={() => onSyncAction(visibleSync.id, 'retry')}>Retry</Button>
+                )}
+                {['pending', 'syncing', 'waiting_insertion'].includes(visibleSync.status) && onSyncAction && (
+                  <Button size="sm" variant="ghost" className="h-auto min-h-8 max-w-full whitespace-normal px-2" onClick={() => onSyncAction(visibleSync.id, 'cancel')}>Cancel sync</Button>
+                )}
+              </>
+            )}
+          </div>
+          {showWeight && (
+            <Badge variant="secondary" className="shrink-0 text-[10px] px-1.5 py-0 whitespace-nowrap">
+              {Math.round(displayWeight)}g<span className="hidden min-[320px]:inline"> Remaining</span>
+            </Badge>
+          )}
+        </div>
+      )}
       {/* Unassign control — a separately-focusable overlay rendered as a
           sibling of the trigger button (not nested inside it, which would be
           invalid DOM). Keyboard-accessible via role/tabIndex/onKeyDown. */}
@@ -340,6 +365,12 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
           </div>
         )}
 
+        {canPrepare && (
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={prepare} onChange={e => setPrepare(e.target.checked)} />
+            Prepare now; assign and sync after filament insertion
+          </label>
+        )}
         <Command className="rounded-lg border shadow-md">
           {/* Filter bar with sort */}
           {hasFilterOptions ? (
@@ -386,7 +417,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
                   key={spool.id}
                   value={buildSpoolSearchValue(spool)}
                   onSelect={() => {
-                    onAssign(spool.id);
+                    onAssign(spool.id, !!canPrepare && prepare);
                     setOpen(false);
                   }}
                   className="flex items-center gap-3 py-2"

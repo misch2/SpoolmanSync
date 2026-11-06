@@ -9,7 +9,7 @@ import {
   type MissingEntityReport,
 } from '@/lib/ha-config-generator';
 import { createActivityLog } from '@/lib/activity-log';
-import { getHiddenPrinters } from '@/app/api/printers/setup/route';
+import { loadHiddenPrinterRecords as getHiddenPrinters } from '@/lib/hidden-printer-settings';
 import { filterHiddenPrinters } from '@/lib/hidden-printers';
 import { getOrCreateWebhookSecret, enableWebhookAuth } from '@/lib/webhook-secret';
 import * as fs from 'fs/promises';
