@@ -5,6 +5,17 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.14-filamentsync.9] - 2026-11-06
+
+### Fixed
+- Unassigning a spool skips the printer clear when fresh bridge observations confirm
+  that a regular AMS slot is already empty with cleared metadata. This is reported
+  as skipped, without claiming a verified printer write. Missing or stale observations,
+  older bridges, and external/HT slots retain the existing clear behavior.
+- Removal messages now distinguish completed Spoolman removal from pending, verified,
+  skipped, or failed printer clears, including explicit printer rejection. Skipped
+  clears remain visible on the dashboard.
+
 ## [1.6.14-filamentsync.8] - 2026-11-06
 
 ### Fixed

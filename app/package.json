@@ -1,6 +1,6 @@
 {
   "name": "app",
-  "version": "1.6.14-filamentsync.8",
+  "version": "1.6.14-filamentsync.9",
   "private": true,
   "scripts": {
     "dev": "next dev",
